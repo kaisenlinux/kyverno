@@ -1,0 +1,15 @@
+Source: kyverno
+Section: admin
+Priority: optional
+Maintainer: Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>
+Build-Depends: debhelper-compat (= 13), dh-golang, golang-go (>= 1.17)
+Standards-Version: 4.6.0
+Homepage: https://kyverno.io/
+Vcs-Browser: https://gitlab.com/kaisenlinux/packages/kyverno
+Vcs-Git: https://gitlab.com/kaisenlinux/packages/kyverno.git
+XS-Go-Import-Path: github.com/kyverno/kyverno
+
+Package: kyverno
+Architecture: amd64 arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}, golang-go (>= 1.17),
+Description: Kubernetes Native Policy Management
