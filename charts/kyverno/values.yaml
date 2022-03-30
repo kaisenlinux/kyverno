@@ -160,7 +160,7 @@ config:
   - "[TokenReview,*,*]"
   - "[SubjectAccessReview,*,*]"
   - "[SelfSubjectAccessReview,*,*]"
-  - "[*,kyverno,*]"
+  - "[*,kyverno,kyverno*]"
   - "[Binding,*,*]"
   - "[ReplicaSet,*,*]"
   - "[ReportChangeRequest,*,*]"
@@ -262,7 +262,5 @@ installCRDs: true
 # policies in a default-deny setup.
 networkPolicy:
   enabled: false
-  namespaceExpressions: []
-  namespaceLabels: {}
-  podExpressions: []
-  podLabels: {}
+# A list of valid from selectors according to https://kubernetes.io/docs/concepts/services-networking/network-policies
+  ingressFrom: []

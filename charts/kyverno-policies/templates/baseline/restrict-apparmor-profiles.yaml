@@ -21,7 +21,10 @@ metadata:
       specify any other AppArmor profiles than `runtime/default` or `localhost/*`.
 spec:
   validationFailureAction: {{ .Values.validationFailureAction }}
-  background: true
+  {{- with concat (index .Values "validationFailureActionOverrides" "all") (default list (index .Values "validationFailureActionOverrides" $name)) }}
+  validationFailureActionOverrides: {{ toYaml . | nindent 4 }}
+  {{- end }}
+  background: {{ .Values.background }}
   rules:
     - name: app-armor
       match:
