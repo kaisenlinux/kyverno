@@ -48,7 +48,7 @@ func checkKind(kinds []string, resource unstructured.Unstructured) bool {
 				return true
 			}
 		} else {
-			if resource.GroupVersionKind().Group == SplitGVK[0] && resource.GroupVersionKind().Kind == strings.Title(SplitGVK[2]) && (resource.GroupVersionKind().Version == SplitGVK[1] || resource.GroupVersionKind().Version == "*") {
+			if resource.GroupVersionKind().Group == SplitGVK[0] && resource.GroupVersionKind().Kind == strings.Title(SplitGVK[2]) && (resource.GroupVersionKind().Version == SplitGVK[1] || SplitGVK[1] == "*") {
 				return true
 			}
 		}
@@ -493,4 +493,11 @@ func incrementAppliedCount(resp *response.EngineResponse) {
 
 func incrementErrorCount(resp *response.EngineResponse) {
 	resp.PolicyResponse.RulesErrorCount++
+}
+
+// invertedElement inverted the order of element for patchStrategicMerge  policies as kustomize patch revering the order of patch resources.
+func invertedElement(elements []interface{}) {
+	for i, j := 0, len(elements)-1; i < j; i, j = i+1, j-1 {
+		elements[i], elements[j] = elements[j], elements[i]
+	}
 }

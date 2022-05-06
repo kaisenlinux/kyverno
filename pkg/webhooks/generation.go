@@ -207,8 +207,10 @@ func (ws *WebhookServer) updateAnnotationInGR(gr *kyverno.GenerateRequest, logge
 	if len(grAnnotations) == 0 {
 		grAnnotations = make(map[string]string)
 	}
+	ws.mu.Lock()
 	grAnnotations["generate.kyverno.io/updation-time"] = time.Now().String()
 	gr.SetAnnotations(grAnnotations)
+	ws.mu.Unlock()
 	_, err := ws.kyvernoClient.KyvernoV1().GenerateRequests(config.KyvernoNamespace).Update(contextdefault.TODO(), gr, metav1.UpdateOptions{})
 	if err != nil {
 		logger.Error(err, "failed to update generate request for the resource", "generate request", gr.Name)
@@ -440,8 +442,15 @@ func applyGenerateRequest(request *v1beta1.AdmissionRequest, gnGenerator generat
 }
 
 func transform(admissionRequestInfo kyverno.AdmissionRequestInfoObject, userRequestInfo kyverno.RequestInfo, er *response.EngineResponse) kyverno.GenerateRequestSpec {
+	var PolicyNameNamespaceKey string
+	if er.PolicyResponse.Policy.Namespace != "" {
+		PolicyNameNamespaceKey = fmt.Sprintf("%s", er.PolicyResponse.Policy.Namespace+"/"+er.PolicyResponse.Policy.Name)
+	} else {
+		PolicyNameNamespaceKey = er.PolicyResponse.Policy.Name
+	}
+
 	gr := kyverno.GenerateRequestSpec{
-		Policy: er.PolicyResponse.Policy.Name,
+		Policy: PolicyNameNamespaceKey,
 		Resource: kyverno.ResourceSpec{
 			Kind:       er.PolicyResponse.Resource.Kind,
 			Namespace:  er.PolicyResponse.Resource.Namespace,

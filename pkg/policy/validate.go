@@ -254,27 +254,35 @@ func Validate(policy *kyverno.ClusterPolicy, client *dclient.Client, mock bool, 
 		match := rule.MatchResources
 		exclude := rule.ExcludeResources
 		for _, value := range match.Any {
-			err := validateKinds(value.ResourceDescription.Kinds, mock, client, *policy)
-			if err != nil {
-				return errors.Wrapf(err, "the kind defined in the any match resource is invalid")
+			if !utils.ContainsString(value.ResourceDescription.Kinds, "*") {
+				err := validateKinds(value.ResourceDescription.Kinds, mock, client, *policy)
+				if err != nil {
+					return errors.Wrapf(err, "the kind defined in the any match resource is invalid")
+				}
 			}
 		}
 		for _, value := range match.All {
-			err := validateKinds(value.ResourceDescription.Kinds, mock, client, *policy)
-			if err != nil {
-				return errors.Wrapf(err, "the kind defined in the all match resource is invalid")
+			if !utils.ContainsString(value.ResourceDescription.Kinds, "*") {
+				err := validateKinds(value.ResourceDescription.Kinds, mock, client, *policy)
+				if err != nil {
+					return errors.Wrapf(err, "the kind defined in the all match resource is invalid")
+				}
 			}
 		}
 		for _, value := range exclude.Any {
-			err := validateKinds(value.ResourceDescription.Kinds, mock, client, *policy)
-			if err != nil {
-				return errors.Wrapf(err, "the kind defined in the any exclude resource is invalid")
+			if !utils.ContainsString(value.ResourceDescription.Kinds, "*") {
+				err := validateKinds(value.ResourceDescription.Kinds, mock, client, *policy)
+				if err != nil {
+					return errors.Wrapf(err, "the kind defined in the any exclude resource is invalid")
+				}
 			}
 		}
 		for _, value := range exclude.All {
-			err := validateKinds(value.ResourceDescription.Kinds, mock, client, *policy)
-			if err != nil {
-				return errors.Wrapf(err, "the kind defined in the all exclude resource is invalid")
+			if !utils.ContainsString(value.ResourceDescription.Kinds, "*") {
+				err := validateKinds(value.ResourceDescription.Kinds, mock, client, *policy)
+				if err != nil {
+					return errors.Wrapf(err, "the kind defined in the all exclude resource is invalid")
+				}
 			}
 		}
 		if !utils.ContainsString(rule.MatchResources.Kinds, "*") {
@@ -1491,7 +1499,7 @@ func validateKinds(kinds []string, mock bool, client *dclient.Client, p kyverno.
 			return fmt.Errorf("kind and match resource kind should not be the same")
 		}
 
-		if !mock {
+		if !mock && !utils.SkipSubResources(k) && !strings.Contains(kind, "*") {
 			_, _, err := client.DiscoveryClient.FindResource(gv, k)
 			if err != nil {
 				return fmt.Errorf("unable to convert GVK to GVR, %s, err: %s", kinds, err)
