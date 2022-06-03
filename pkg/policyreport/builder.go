@@ -14,7 +14,6 @@ import (
 	"github.com/kyverno/kyverno/pkg/config"
 	"github.com/kyverno/kyverno/pkg/engine"
 	"github.com/kyverno/kyverno/pkg/engine/response"
-	"github.com/kyverno/kyverno/pkg/engine/utils"
 	"github.com/kyverno/kyverno/pkg/version"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -59,7 +58,7 @@ func GeneratePRsFromEngineResponse(ers []*response.EngineResponse, log logr.Logg
 	for _, er := range ers {
 		// ignore creation of PV for resources that are yet to be assigned a name
 		if er.PolicyResponse.Resource.Name == "" {
-			log.V(4).Info("resource does no have a name assigned yet, not creating a policy violation", "resource", er.PolicyResponse.Resource)
+			log.V(4).Info("skipping resource with no name", "resource", er.PolicyResponse.Resource)
 			continue
 		}
 
@@ -67,7 +66,7 @@ func GeneratePRsFromEngineResponse(ers []*response.EngineResponse, log logr.Logg
 			continue
 		}
 
-		if er.Policy != nil && engine.ManagedPodResource(*er.Policy, er.PatchedResource) {
+		if er.Policy != nil && engine.ManagedPodResource(er.Policy, er.PatchedResource) {
 			continue
 		}
 
@@ -95,11 +94,11 @@ func NewBuilder(cpolLister kyvernolister.ClusterPolicyLister, polLister kyvernol
 }
 
 func (builder *requestBuilder) build(info Info) (req *unstructured.Unstructured, err error) {
-	results := []*report.PolicyReportResult{}
+	results := []report.PolicyReportResult{}
 	req = new(unstructured.Unstructured)
 	for _, infoResult := range info.Results {
 		for _, rule := range infoResult.Rules {
-			if rule.Type != utils.Validation.String() && rule.Type != utils.ImageVerify.String() {
+			if rule.Type != string(response.Validation) && rule.Type != string(response.ImageVerify) {
 				continue
 			}
 
@@ -161,12 +160,12 @@ func (builder *requestBuilder) build(info Info) (req *unstructured.Unstructured,
 	return req, nil
 }
 
-func (builder *requestBuilder) buildRCRResult(policy string, resource response.ResourceSpec, rule kyverno.ViolatedRule) *report.PolicyReportResult {
+func (builder *requestBuilder) buildRCRResult(policy string, resource response.ResourceSpec, rule kyverno.ViolatedRule) report.PolicyReportResult {
 	av := builder.fetchAnnotationValues(policy, resource.Namespace)
 
-	result := &report.PolicyReportResult{
+	result := report.PolicyReportResult{
 		Policy: policy,
-		Resources: []*v1.ObjectReference{
+		Resources: []v1.ObjectReference{
 			{
 				Kind:       resource.Kind,
 				Namespace:  resource.Namespace,
@@ -247,7 +246,7 @@ func setRequestDeletionLabels(req *unstructured.Unstructured, info Info) bool {
 	return false
 }
 
-func calculateSummary(results []*report.PolicyReportResult) (summary report.PolicyReportSummary) {
+func calculateSummary(results []report.PolicyReportResult) (summary report.PolicyReportSummary) {
 	for _, res := range results {
 		switch string(res.Result) {
 		case report.StatusPass:
@@ -284,7 +283,7 @@ func buildViolatedRules(er *response.EngineResponse) []kyverno.ViolatedRule {
 	for _, rule := range er.PolicyResponse.Rules {
 		vrule := kyverno.ViolatedRule{
 			Name:    rule.Name,
-			Type:    rule.Type,
+			Type:    string(rule.Type),
 			Message: rule.Message,
 		}
 
@@ -314,7 +313,7 @@ func toPolicyResult(status response.RuleStatus) string {
 
 const categoryLabel string = "policies.kyverno.io/category"
 const severityLabel string = "policies.kyverno.io/severity"
-const scoredLabel string = "policies.kyverno.io/scored"
+const ScoredLabel string = "policies.kyverno.io/scored"
 
 type annotationValues struct {
 	category string
@@ -343,7 +342,7 @@ func (builder *requestBuilder) fetchAnnotationValues(policy, ns string) annotati
 	if severity, ok := ann[severityLabel]; ok {
 		av.setSeverityFromString(severity)
 	}
-	if scored, ok := ann[scoredLabel]; ok {
+	if scored, ok := ann[ScoredLabel]; ok {
 		if scored == "false" {
 			av.scored = false
 		} else {

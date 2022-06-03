@@ -114,10 +114,12 @@ func (t *Monitor) Run(register *Register, certRenewer *tls.CertRenewer, eventGen
 			}
 
 			// update namespaceSelector every 30 seconds
-			if register.autoUpdateWebhooks {
-				logger.V(3).Info("updating webhook configurations for namespaceSelector with latest kyverno ConfigMap")
-				register.UpdateWebhookChan <- true
-			}
+			go func() {
+				if register.autoUpdateWebhooks {
+					logger.V(4).Info("updating webhook configurations for namespaceSelector with latest kyverno ConfigMap")
+					register.UpdateWebhookChan <- true
+				}
+			}()
 
 			timeDiff := time.Since(t.Time())
 			lastRequestTimeFromAnn := lastRequestTimeFromAnnotation(t.leaseClient, t.log.WithName("lastRequestTimeFromAnnotation"))
@@ -132,15 +134,19 @@ func (t *Monitor) Run(register *Register, certRenewer *tls.CertRenewer, eventGen
 
 			switch {
 			case timeDiff > idleDeadline:
-				err := fmt.Errorf("admission control configuration error")
-				logger.Error(err, "webhook check failed", "deadline", idleDeadline.String())
+				err := fmt.Errorf("webhook hasn't received requests in %v, updating Kyverno to verify webhook status", idleDeadline.String())
+				logger.Error(err, "webhook check failed", "time", t.Time(), "lastRequestTimestamp", lastRequestTimeFromAnn)
+
+				// update deployment to renew lastSeenRequestTime
 				if err := status.failure(); err != nil {
 					logger.Error(err, "failed to annotate deployment webhook status to failure")
+
+					if err := register.Register(); err != nil {
+						logger.Error(err, "Failed to register webhooks")
+					}
 				}
 
-				if err := register.Register(); err != nil {
-					logger.Error(err, "Failed to register webhooks")
-				}
+				continue
 
 			case timeDiff > 2*idleCheckInterval:
 				if skipWebhookCheck(register, logger.WithName("skipWebhookCheck")) {
@@ -157,7 +163,7 @@ func (t *Monitor) Run(register *Register, certRenewer *tls.CertRenewer, eventGen
 			idleT := time.Since(*lastRequestTimeFromAnn)
 			if idleT > idleCheckInterval {
 				if t.Time().After(*lastRequestTimeFromAnn) {
-					logger.V(3).Info("updating annotation lastRequestTimestamp with the latest in-memory timestamp", "time", t.Time())
+					logger.V(3).Info("updating annotation lastRequestTimestamp with the latest in-memory timestamp", "time", t.Time(), "lastRequestTimestamp", lastRequestTimeFromAnn)
 					if err := status.UpdateLastRequestTimestmap(t.Time()); err != nil {
 						logger.Error(err, "failed to update lastRequestTimestamp annotation")
 					}
@@ -219,11 +225,11 @@ func lastRequestTimeFromAnnotation(leaseClient coordinationv1.LeaseInterface, lo
 
 // skipWebhookCheck returns true if Kyverno is in rolling update
 func skipWebhookCheck(register *Register, logger logr.Logger) bool {
-	_, deploy, err := register.GetKubePolicyDeployment()
+	deploy, err := register.GetKubePolicyDeployment()
 	if err != nil {
 		logger.Info("unable to get Kyverno deployment", "reason", err.Error())
 		return false
 	}
 
-	return tls.IsKyvernoInRollingUpdate(deploy.UnstructuredContent(), logger)
+	return tls.IsKyvernoInRollingUpdate(deploy, logger)
 }

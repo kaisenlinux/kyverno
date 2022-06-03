@@ -4,30 +4,26 @@ import (
 	"strings"
 	"time"
 
-	v1 "github.com/kyverno/kyverno/api/kyverno/v1"
-	"github.com/kyverno/kyverno/pkg/engine"
-	"github.com/kyverno/kyverno/pkg/utils"
-
-	"github.com/pkg/errors"
-
-	"github.com/kyverno/kyverno/pkg/common"
-	client "github.com/kyverno/kyverno/pkg/dclient"
-
 	"github.com/go-logr/logr"
+	"github.com/kyverno/kyverno/api/kyverno/v1beta1"
+	"github.com/kyverno/kyverno/pkg/common"
 	"github.com/kyverno/kyverno/pkg/config"
+	client "github.com/kyverno/kyverno/pkg/dclient"
+	"github.com/kyverno/kyverno/pkg/engine"
 	"github.com/kyverno/kyverno/pkg/event"
 	"github.com/kyverno/kyverno/pkg/metrics"
 	"github.com/kyverno/kyverno/pkg/policycache"
 	"github.com/kyverno/kyverno/pkg/policyreport"
 	"github.com/kyverno/kyverno/pkg/userinfo"
-	"k8s.io/api/admission/v1beta1"
+	"github.com/kyverno/kyverno/pkg/utils"
+	"github.com/pkg/errors"
+	admissionv1 "k8s.io/api/admission/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	informers "k8s.io/client-go/informers/core/v1"
 	rbacinformer "k8s.io/client-go/informers/rbac/v1"
 	listerv1 "k8s.io/client-go/listers/core/v1"
 	rbaclister "k8s.io/client-go/listers/rbac/v1"
-	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
 
@@ -41,26 +37,23 @@ const (
 // the request is processed in background, with the exact same logic
 // when process the admission request in the webhook
 type AuditHandler interface {
-	Add(request *v1beta1.AdmissionRequest)
+	Add(request *admissionv1.AdmissionRequest)
 	Run(workers int, stopCh <-chan struct{})
 }
 
 type auditHandler struct {
-	client      *client.Client
+	client      client.Interface
 	queue       workqueue.RateLimitingInterface
 	pCache      policycache.Interface
 	eventGen    event.Interface
 	prGenerator policyreport.GeneratorInterface
 
-	rbLister       rbaclister.RoleBindingLister
-	rbSynced       cache.InformerSynced
-	crbLister      rbaclister.ClusterRoleBindingLister
-	crbSynced      cache.InformerSynced
-	nsLister       listerv1.NamespaceLister
-	nsListerSynced cache.InformerSynced
+	rbLister  rbaclister.RoleBindingLister
+	crbLister rbaclister.ClusterRoleBindingLister
+	nsLister  listerv1.NamespaceLister
 
 	log           logr.Logger
-	configHandler config.Interface
+	configHandler config.Configuration
 	promConfig    *metrics.PromConfig
 }
 
@@ -72,29 +65,26 @@ func NewValidateAuditHandler(pCache policycache.Interface,
 	crbInformer rbacinformer.ClusterRoleBindingInformer,
 	namespaces informers.NamespaceInformer,
 	log logr.Logger,
-	dynamicConfig config.Interface,
-	client *client.Client,
+	dynamicConfig config.Configuration,
+	client client.Interface,
 	promConfig *metrics.PromConfig) AuditHandler {
 
 	return &auditHandler{
-		pCache:         pCache,
-		queue:          workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), workQueueName),
-		eventGen:       eventGen,
-		rbLister:       rbInformer.Lister(),
-		rbSynced:       rbInformer.Informer().HasSynced,
-		crbLister:      crbInformer.Lister(),
-		crbSynced:      crbInformer.Informer().HasSynced,
-		nsLister:       namespaces.Lister(),
-		nsListerSynced: namespaces.Informer().HasSynced,
-		log:            log,
-		prGenerator:    prGenerator,
-		configHandler:  dynamicConfig,
-		client:         client,
-		promConfig:     promConfig,
+		pCache:        pCache,
+		queue:         workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), workQueueName),
+		eventGen:      eventGen,
+		rbLister:      rbInformer.Lister(),
+		crbLister:     crbInformer.Lister(),
+		nsLister:      namespaces.Lister(),
+		log:           log,
+		prGenerator:   prGenerator,
+		configHandler: dynamicConfig,
+		client:        client,
+		promConfig:    promConfig,
 	}
 }
 
-func (h *auditHandler) Add(request *v1beta1.AdmissionRequest) {
+func (h *auditHandler) Add(request *admissionv1.AdmissionRequest) {
 	h.log.V(4).Info("admission request added", "uid", request.UID, "kind", request.Kind.Kind, "namespace", request.Namespace, "name", request.Name, "operation", request.Operation)
 	h.queue.Add(request)
 }
@@ -106,10 +96,6 @@ func (h *auditHandler) Run(workers int, stopCh <-chan struct{}) {
 		utilruntime.HandleCrash()
 		h.log.V(4).Info("shutting down")
 	}()
-
-	if !cache.WaitForCacheSync(stopCh, h.rbSynced, h.crbSynced) {
-		h.log.Info("failed to sync informer cache")
-	}
 
 	for i := 0; i < workers; i++ {
 		go wait.Until(h.runWorker, time.Second, stopCh)
@@ -131,7 +117,7 @@ func (h *auditHandler) processNextWorkItem() bool {
 
 	defer h.queue.Done(obj)
 
-	request, ok := obj.(*v1beta1.AdmissionRequest)
+	request, ok := obj.(*admissionv1.AdmissionRequest)
 	if !ok {
 		h.queue.Forget(obj)
 		h.log.Info("incorrect type: expecting type 'AdmissionRequest'", "object", obj)
@@ -144,7 +130,7 @@ func (h *auditHandler) processNextWorkItem() bool {
 	return true
 }
 
-func (h *auditHandler) process(request *v1beta1.AdmissionRequest) error {
+func (h *auditHandler) process(request *admissionv1.AdmissionRequest) error {
 	var roles, clusterRoles []string
 	var err error
 	// time at which the corresponding the admission request's processing got initiated
@@ -161,7 +147,7 @@ func (h *auditHandler) process(request *v1beta1.AdmissionRequest) error {
 		}
 	}
 
-	userRequestInfo := v1.RequestInfo{
+	userRequestInfo := v1beta1.RequestInfo{
 		Roles:             roles,
 		ClusterRoles:      clusterRoles,
 		AdmissionUserInfo: request.UserInfo}
@@ -181,8 +167,8 @@ func (h *auditHandler) process(request *v1beta1.AdmissionRequest) error {
 		return errors.Wrap(err, "failed create parse resource")
 	}
 
-	if err := ctx.AddImageInfo(&newResource); err != nil {
-		return errors.Wrap(err, "failed add image information to policy rule context\"")
+	if err := ctx.AddImageInfos(&newResource); err != nil {
+		return errors.Wrap(err, "failed add image information to policy rule context")
 	}
 
 	policyContext := &engine.PolicyContext{
@@ -193,6 +179,7 @@ func (h *auditHandler) process(request *v1beta1.AdmissionRequest) error {
 		ExcludeResourceFunc: h.configHandler.ToFilter,
 		JSONContext:         ctx,
 		Client:              h.client,
+		AdmissionOperation:  true,
 	}
 
 	vh := &validationHandler{
@@ -205,7 +192,7 @@ func (h *auditHandler) process(request *v1beta1.AdmissionRequest) error {
 	return nil
 }
 
-func (h *auditHandler) handleErr(err error, key interface{}, request *v1beta1.AdmissionRequest) {
+func (h *auditHandler) handleErr(err error, key interface{}, request *admissionv1.AdmissionRequest) {
 	logger := h.log.WithName("handleErr")
 	if err == nil {
 		h.queue.Forget(key)

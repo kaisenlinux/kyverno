@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"os"
-	"path"
 	ospath "path"
 	"path/filepath"
 	"reflect"
@@ -74,7 +73,7 @@ type Generation struct {
 // it may not work as expected.
 func RootDir() string {
 	_, b, _, _ := runtime.Caller(0)
-	d := path.Join(path.Dir(b))
+	d := ospath.Join(ospath.Dir(b))
 	d = filepath.Dir(d)
 	return filepath.Dir(d)
 }
@@ -143,7 +142,7 @@ func runTestCase(t *testing.T, tc TestCase) bool {
 	}
 
 	ctx := &engine.PolicyContext{
-		Policy:           *policy,
+		Policy:           policy,
 		NewResource:      *resource,
 		ExcludeGroupRole: []string{},
 		JSONContext:      context.NewContext(),
@@ -160,7 +159,7 @@ func runTestCase(t *testing.T, tc TestCase) bool {
 	}
 
 	ctx = &engine.PolicyContext{
-		Policy:           *policy,
+		Policy:           policy,
 		NewResource:      *resource,
 		ExcludeGroupRole: []string{},
 		JSONContext:      context.NewContext(),
@@ -182,7 +181,7 @@ func runTestCase(t *testing.T, tc TestCase) bool {
 		} else {
 			policyContext := &engine.PolicyContext{
 				NewResource:      *resource,
-				Policy:           *policy,
+				Policy:           policy,
 				Client:           client,
 				ExcludeGroupRole: []string{},
 				ExcludeResourceFunc: func(s1, s2, s3 string) bool {
@@ -191,7 +190,7 @@ func runTestCase(t *testing.T, tc TestCase) bool {
 				JSONContext: context.NewContext(),
 			}
 
-			er = engine.Generate(policyContext)
+			er = engine.ApplyBackgroundChecks(policyContext)
 			t.Log(("---Generation---"))
 			validateResponse(t, er.PolicyResponse, tc.Expected.Generation.PolicyResponse)
 			// Expected generate resource will be in same namespaces as resource
@@ -201,11 +200,11 @@ func runTestCase(t *testing.T, tc TestCase) bool {
 	return true
 }
 
-func createNamespace(client *client.Client, ns *unstructured.Unstructured) error {
+func createNamespace(client client.Interface, ns *unstructured.Unstructured) error {
 	_, err := client.CreateResource("", "Namespace", "", ns, false)
 	return err
 }
-func validateGeneratedResources(t *testing.T, client *client.Client, policy kyverno.ClusterPolicy, namespace string, expected []kyverno.ResourceSpec) {
+func validateGeneratedResources(t *testing.T, client client.Interface, policy kyverno.ClusterPolicy, namespace string, expected []kyverno.ResourceSpec) {
 	t.Log("--validate if resources are generated---")
 	// list of expected generated resources
 	for _, resource := range expected {
@@ -347,13 +346,10 @@ func loadPolicyResource(t *testing.T, file string) *unstructured.Unstructured {
 	return resources[0]
 }
 
-func getClient(t *testing.T, files []string) *client.Client {
+func getClient(t *testing.T, files []string) client.Interface {
 	var objects []k8sRuntime.Object
-	if files != nil {
-
-		for _, file := range files {
-			objects = loadObjects(t, file)
-		}
+	for _, file := range files {
+		objects = loadObjects(t, file)
 	}
 	// create mock client
 	scheme := k8sRuntime.NewScheme()

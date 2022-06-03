@@ -2,9 +2,11 @@ package registryclient
 
 import (
 	"context"
+	"io/ioutil"
+
+	"github.com/google/go-containerregistry/pkg/authn/github"
 
 	ecr "github.com/awslabs/amazon-ecr-credential-helper/ecr-login"
-	"github.com/awslabs/amazon-ecr-credential-helper/ecr-login/api"
 	"github.com/chrismellard/docker-credential-acr-env/pkg/credhelper"
 	"github.com/google/go-containerregistry/pkg/authn"
 	kauth "github.com/google/go-containerregistry/pkg/authn/kubernetes"
@@ -16,26 +18,31 @@ import (
 var (
 	Secrets []string
 
-	kubeClient            kubernetes.Interface
-	kyvernoNamespace      string
-	kyvernoServiceAccount string
+	kubeClient     kubernetes.Interface
+	namespace      string
+	serviceAccount string
 
-	amazonKeychain  authn.Keychain = authn.NewKeychainFromHelper(ecr.ECRHelper{ClientFactory: api.DefaultClientFactory{}})
-	azureKeychain   authn.Keychain = authn.NewKeychainFromHelper(credhelper.NewACRCredentialsHelper())
-	defaultKeychain authn.Keychain = authn.NewMultiKeychain(
+	defaultKeychain = authn.NewMultiKeychain(
 		authn.DefaultKeychain,
 		google.Keychain,
-		amazonKeychain,
-		azureKeychain,
+		authn.NewKeychainFromHelper(ecr.NewECRHelper(ecr.WithLogger(ioutil.Discard))),
+		authn.NewKeychainFromHelper(credhelper.NewACRCredentialsHelper()),
+		github.Keychain,
 	)
-	DefaultKeychain authn.Keychain = defaultKeychain
+
+	DefaultKeychain = defaultKeychain
 )
 
+// InitializeLocal loads the docker credentials and initializes the default auth method for container registry API calls
+func InitializeLocal() {
+	DefaultKeychain = authn.DefaultKeychain
+}
+
 // Initialize loads the image pull secrets and initializes the default auth method for container registry API calls
-func Initialize(client kubernetes.Interface, namespace, serviceAccount string, imagePullSecrets []string) error {
+func Initialize(client kubernetes.Interface, ns, sa string, imagePullSecrets []string) error {
 	kubeClient = client
-	kyvernoNamespace = namespace
-	kyvernoServiceAccount = serviceAccount
+	namespace = ns
+	serviceAccount = sa
 	Secrets = imagePullSecrets
 
 	var kc authn.Keychain
@@ -60,7 +67,7 @@ func Initialize(client kubernetes.Interface, namespace, serviceAccount string, i
 
 // UpdateKeychain reinitializes the image pull secrets and default auth method for container registry API calls
 func UpdateKeychain() error {
-	var err = Initialize(kubeClient, kyvernoNamespace, kyvernoServiceAccount, Secrets)
+	var err = Initialize(kubeClient, namespace, serviceAccount, Secrets)
 	if err != nil {
 		return err
 	}

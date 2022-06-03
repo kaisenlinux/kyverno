@@ -7,16 +7,15 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/pkg/errors"
-
 	"github.com/googleapis/gnostic/compiler"
 	openapiv2 "github.com/googleapis/gnostic/openapiv2"
 	v1 "github.com/kyverno/kyverno/api/kyverno/v1"
 	"github.com/kyverno/kyverno/data"
-	"github.com/kyverno/kyverno/pkg/common"
+	"github.com/kyverno/kyverno/pkg/autogen"
 	"github.com/kyverno/kyverno/pkg/engine"
 	"github.com/kyverno/kyverno/pkg/utils"
 	cmap "github.com/orcaman/concurrent-map"
+	"github.com/pkg/errors"
 	"gopkg.in/yaml.v3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -136,19 +135,20 @@ func (o *Controller) ValidateResource(patchedResource unstructured.Unstructured,
 }
 
 // ValidatePolicyMutation ...
-func (o *Controller) ValidatePolicyMutation(policy v1.ClusterPolicy) error {
+func (o *Controller) ValidatePolicyMutation(policy v1.PolicyInterface) error {
 	var kindToRules = make(map[string][]v1.Rule)
-	for _, rule := range policy.Spec.Rules {
+	for _, rule := range autogen.ComputeRules(policy) {
 		if rule.HasMutate() {
 			for _, kind := range rule.MatchResources.Kinds {
-				kindToRules[kind] = append(kindToRules[common.GetFormatedKind(kind)], rule)
+				kindToRules[kind] = append(kindToRules[kind], rule)
 			}
 		}
 	}
 
 	for kind, rules := range kindToRules {
-		newPolicy := *policy.DeepCopy()
-		newPolicy.Spec.Rules = rules
+		newPolicy := policy.CreateDeepCopy()
+		spec := newPolicy.GetSpec()
+		spec.SetRules(rules)
 		k := o.gvkToDefinitionName.GetKind(kind)
 		resource, _ := o.generateEmptyResource(o.definitions.GetSchema(k)).(map[string]interface{})
 		if resource == nil || len(resource) == 0 {
@@ -183,7 +183,7 @@ func (o *Controller) useOpenAPIDocument(doc *openapiv2.Document) error {
 
 		gvk, preferredGVK, err := o.getGVKByDefinitionName(definitionName)
 		if err != nil {
-			log.Log.V(3).Info("unable to cache OpenAPISchema", "definitionName", definitionName, "reason", err.Error())
+			log.Log.V(5).Info("unable to cache OpenAPISchema", "definitionName", definitionName, "reason", err.Error())
 			continue
 		}
 

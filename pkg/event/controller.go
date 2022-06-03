@@ -14,7 +14,6 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
-	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
@@ -22,15 +21,11 @@ import (
 
 //Generator generate events
 type Generator struct {
-	client *client.Client
+	client client.Interface
 	// list/get cluster policy
 	cpLister kyvernolister.ClusterPolicyLister
-	// returns true if the cluster policy store has been synced at least once
-	cpSynced cache.InformerSynced
 	// list/get policy
 	pLister kyvernolister.PolicyLister
-	// returns true if the policy store has been synced at least once
-	pSynced cache.InformerSynced
 	// queue to store event generation requests
 	queue workqueue.RateLimitingInterface
 	// events generated at policy controller
@@ -39,7 +34,10 @@ type Generator struct {
 	admissionCtrRecorder record.EventRecorder
 	// events generated at namespaced policy controller to process 'generate' rule
 	genPolicyRecorder record.EventRecorder
-	log               logr.Logger
+	// events generated at mutateExisting controller
+	mutateExistingRecorder record.EventRecorder
+
+	log logr.Logger
 }
 
 //Interface to generate event
@@ -48,19 +46,17 @@ type Interface interface {
 }
 
 //NewEventGenerator to generate a new event controller
-func NewEventGenerator(client *client.Client, cpInformer kyvernoinformer.ClusterPolicyInformer, pInformer kyvernoinformer.PolicyInformer, log logr.Logger) *Generator {
-
+func NewEventGenerator(client client.Interface, cpInformer kyvernoinformer.ClusterPolicyInformer, pInformer kyvernoinformer.PolicyInformer, log logr.Logger) *Generator {
 	gen := Generator{
-		client:               client,
-		cpLister:             cpInformer.Lister(),
-		cpSynced:             cpInformer.Informer().HasSynced,
-		pLister:              pInformer.Lister(),
-		pSynced:              pInformer.Informer().HasSynced,
-		queue:                workqueue.NewNamedRateLimitingQueue(rateLimiter(), eventWorkQueueName),
-		policyCtrRecorder:    initRecorder(client, PolicyController, log),
-		admissionCtrRecorder: initRecorder(client, AdmissionController, log),
-		genPolicyRecorder:    initRecorder(client, GeneratePolicyController, log),
-		log:                  log,
+		client:                 client,
+		cpLister:               cpInformer.Lister(),
+		pLister:                pInformer.Lister(),
+		queue:                  workqueue.NewNamedRateLimitingQueue(rateLimiter(), eventWorkQueueName),
+		policyCtrRecorder:      initRecorder(client, PolicyController, log),
+		admissionCtrRecorder:   initRecorder(client, AdmissionController, log),
+		genPolicyRecorder:      initRecorder(client, GeneratePolicyController, log),
+		mutateExistingRecorder: initRecorder(client, MutateExistingController, log),
+		log:                    log,
 	}
 	return &gen
 }
@@ -69,8 +65,8 @@ func rateLimiter() workqueue.RateLimiter {
 	return workqueue.DefaultItemBasedRateLimiter()
 }
 
-func initRecorder(client *client.Client, eventSource Source, log logr.Logger) record.EventRecorder {
-	// Initliaze Event Broadcaster
+func initRecorder(client client.Interface, eventSource Source, log logr.Logger) record.EventRecorder {
+	// Initialize Event Broadcaster
 	err := scheme.AddToScheme(scheme.Scheme)
 	if err != nil {
 		log.Error(err, "failed to add to scheme")
@@ -85,10 +81,15 @@ func initRecorder(client *client.Client, eventSource Source, log logr.Logger) re
 	}
 	eventBroadcaster.StartRecordingToSink(
 		&typedcorev1.EventSinkImpl{
-			Interface: eventInterface})
+			Interface: eventInterface,
+		},
+	)
 	recorder := eventBroadcaster.NewRecorder(
 		scheme.Scheme,
-		v1.EventSource{Component: eventSource.String()})
+		v1.EventSource{
+			Component: eventSource.String(),
+		},
+	)
 	return recorder
 }
 
@@ -113,10 +114,6 @@ func (gen *Generator) Run(workers int, stopCh <-chan struct{}) {
 
 	logger.Info("start")
 	defer logger.Info("shutting down")
-
-	if !cache.WaitForCacheSync(stopCh, gen.cpSynced, gen.pSynced) {
-		logger.Info("failed to sync informer cache")
-	}
 
 	for i := 0; i < workers; i++ {
 		go wait.Until(gen.runWorker, time.Second, stopCh)
@@ -219,33 +216,10 @@ func (gen *Generator) syncHandler(key Info) error {
 		gen.policyCtrRecorder.Event(robj, eventType, key.Reason, key.Message)
 	case GeneratePolicyController:
 		gen.genPolicyRecorder.Event(robj, eventType, key.Reason, key.Message)
+	case MutateExistingController:
+		gen.mutateExistingRecorder.Event(robj, eventType, key.Reason, key.Message)
 	default:
 		logger.Info("info.source not defined for the request")
 	}
 	return nil
-}
-
-//NewEvent builds a event creation request
-func NewEvent(
-	log logr.Logger,
-	rkind,
-	rapiVersion,
-	rnamespace,
-	rname,
-	reason string,
-	source Source,
-	message MsgKey,
-	args ...interface{}) Info {
-	msgText, err := getEventMsg(message, args...)
-	if err != nil {
-		log.Error(err, "failed to get event message")
-	}
-	return Info{
-		Kind:      rkind,
-		Name:      rname,
-		Namespace: rnamespace,
-		Reason:    reason,
-		Source:    source,
-		Message:   msgText,
-	}
 }

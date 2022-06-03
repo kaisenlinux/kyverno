@@ -6,19 +6,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kyverno/kyverno/pkg/engine/common"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/go-logr/logr"
+	wildcard "github.com/kyverno/go-wildcard"
 	kyverno "github.com/kyverno/kyverno/api/kyverno/v1"
+	urkyverno "github.com/kyverno/kyverno/api/kyverno/v1beta1"
+	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/utils/store"
+	"github.com/kyverno/kyverno/pkg/engine/common"
 	"github.com/kyverno/kyverno/pkg/engine/context"
 	"github.com/kyverno/kyverno/pkg/engine/response"
-	engineUtils "github.com/kyverno/kyverno/pkg/engine/utils"
 	"github.com/kyverno/kyverno/pkg/engine/variables"
-	"github.com/pkg/errors"
-
 	"github.com/kyverno/kyverno/pkg/engine/wildcards"
 	"github.com/kyverno/kyverno/pkg/utils"
-	"github.com/minio/pkg/wildcard"
+	"github.com/pkg/errors"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
@@ -36,19 +37,25 @@ type EngineStats struct {
 	RulesAppliedCount int
 }
 
-func checkKind(kinds []string, resource unstructured.Unstructured) bool {
-	for _, kind := range kinds {
-		SplitGVK := strings.Split(kind, "/")
-		if len(SplitGVK) == 1 {
-			if resource.GetKind() == strings.Title(kind) || kind == "*" {
+func checkKind(kinds []string, resourceKind string, gvk schema.GroupVersionKind) bool {
+	for _, k := range kinds {
+		parts := strings.Split(k, "/")
+		if len(parts) == 1 {
+			if k == "*" || resourceKind == strings.Title(k) {
 				return true
 			}
-		} else if len(SplitGVK) == 2 {
-			if resource.GroupVersionKind().Kind == strings.Title(SplitGVK[1]) && resource.GroupVersionKind().Version == SplitGVK[0] {
+		}
+
+		if len(parts) == 2 {
+			kindParts := strings.SplitN(parts[1], ".", 2)
+			if gvk.Kind == strings.Title(kindParts[0]) && gvk.Version == parts[0] {
 				return true
 			}
-		} else {
-			if resource.GroupVersionKind().Group == SplitGVK[0] && resource.GroupVersionKind().Kind == strings.Title(SplitGVK[2]) && (resource.GroupVersionKind().Version == SplitGVK[1] || SplitGVK[1] == "*") {
+		}
+
+		if len(parts) == 3 || len(parts) == 4 {
+			kindParts := strings.SplitN(parts[2], ".", 2)
+			if gvk.Group == parts[0] && (gvk.Version == parts[1] || parts[1] == "*") && gvk.Kind == strings.Title(kindParts[0]) {
 				return true
 			}
 		}
@@ -90,7 +97,7 @@ func checkAnnotations(annotations map[string]string, resourceAnnotations map[str
 			}
 		}
 
-		if match == false {
+		if !match {
 			return false
 		}
 	}
@@ -128,11 +135,11 @@ func checkSelector(labelSelector *metav1.LabelSelector, resourceLabels map[strin
 // should be: AND across attributes but an OR inside attributes that of type list
 // To filter out the targeted resources with UserInfo, the check
 // should be: OR (across & inside) attributes
-func doesResourceMatchConditionBlock(conditionBlock kyverno.ResourceDescription, userInfo kyverno.UserInfo, admissionInfo kyverno.RequestInfo, resource unstructured.Unstructured, dynamicConfig []string, namespaceLabels map[string]string) []error {
+func doesResourceMatchConditionBlock(conditionBlock kyverno.ResourceDescription, userInfo kyverno.UserInfo, admissionInfo urkyverno.RequestInfo, resource unstructured.Unstructured, dynamicConfig []string, namespaceLabels map[string]string) []error {
 	var errs []error
 
 	if len(conditionBlock.Kinds) > 0 {
-		if !checkKind(conditionBlock.Kinds, resource) {
+		if !checkKind(conditionBlock.Kinds, resource.GetKind(), resource.GroupVersionKind()) {
 			errs = append(errs, fmt.Errorf("kind does not match %v", conditionBlock.Kinds))
 		}
 	}
@@ -234,37 +241,54 @@ func doesResourceMatchConditionBlock(conditionBlock kyverno.ResourceDescription,
 func matchSubjects(ruleSubjects []rbacv1.Subject, userInfo authenticationv1.UserInfo, dynamicConfig []string) bool {
 	const SaPrefix = "system:serviceaccount:"
 
-	userGroups := append(userInfo.Groups, userInfo.Username)
-
-	// TODO: see issue https://github.com/kyverno/kyverno/issues/861
-	for _, e := range dynamicConfig {
-		ruleSubjects = append(ruleSubjects,
-			rbacv1.Subject{Kind: "Group", Name: e},
-		)
-	}
-
-	for _, subject := range ruleSubjects {
-		switch subject.Kind {
-		case "ServiceAccount":
-			if len(userInfo.Username) <= len(SaPrefix) {
-				continue
-			}
-			subjectServiceAccount := subject.Namespace + ":" + subject.Name
-			if userInfo.Username[len(SaPrefix):] == subjectServiceAccount {
-				return true
-			}
-		case "User", "Group":
-			if utils.ContainsString(userGroups, subject.Name) {
-				return true
+	if store.GetMock() {
+		mockSubject := store.GetSubjects().Subject
+		for _, subject := range ruleSubjects {
+			switch subject.Kind {
+			case "ServiceAccount":
+				if subject.Name == mockSubject.Name && subject.Namespace == mockSubject.Namespace {
+					return true
+				}
+			case "User", "Group":
+				if mockSubject.Name == subject.Name {
+					return true
+				}
 			}
 		}
-	}
 
-	return false
+		return false
+	} else {
+		userGroups := append(userInfo.Groups, userInfo.Username)
+		// TODO: see issue https://github.com/kyverno/kyverno/issues/861
+		for _, e := range dynamicConfig {
+			ruleSubjects = append(ruleSubjects,
+				rbacv1.Subject{Kind: "Group", Name: e},
+			)
+		}
+
+		for _, subject := range ruleSubjects {
+			switch subject.Kind {
+			case "ServiceAccount":
+				if len(userInfo.Username) <= len(SaPrefix) {
+					continue
+				}
+				subjectServiceAccount := subject.Namespace + ":" + subject.Name
+				if userInfo.Username[len(SaPrefix):] == subjectServiceAccount {
+					return true
+				}
+			case "User", "Group":
+				if utils.ContainsString(userGroups, subject.Name) {
+					return true
+				}
+			}
+		}
+
+		return false
+	}
 }
 
 //MatchesResourceDescription checks if the resource matches resource description of the rule or not
-func MatchesResourceDescription(resourceRef unstructured.Unstructured, ruleRef kyverno.Rule, admissionInfoRef kyverno.RequestInfo, dynamicConfig []string, namespaceLabels map[string]string, policyNamespace string) error {
+func MatchesResourceDescription(resourceRef unstructured.Unstructured, ruleRef kyverno.Rule, admissionInfoRef urkyverno.RequestInfo, dynamicConfig []string, namespaceLabels map[string]string, policyNamespace string) error {
 
 	rule := ruleRef.DeepCopy()
 	resource := *resourceRef.DeepCopy()
@@ -274,6 +298,7 @@ func MatchesResourceDescription(resourceRef unstructured.Unstructured, ruleRef k
 	if policyNamespace != "" && policyNamespace != resourceRef.GetNamespace() {
 		return errors.New(" The policy and resource namespace are different. Therefore, policy skip this resource.")
 	}
+
 	if len(rule.MatchResources.Any) > 0 {
 		// include object if ANY of the criteria match
 		// so if one matches then break from loop
@@ -337,7 +362,7 @@ func MatchesResourceDescription(resourceRef unstructured.Unstructured, ruleRef k
 	return nil
 }
 
-func matchesResourceDescriptionMatchHelper(rmr kyverno.ResourceFilter, admissionInfo kyverno.RequestInfo, resource unstructured.Unstructured, dynamicConfig []string, namespaceLabels map[string]string) []error {
+func matchesResourceDescriptionMatchHelper(rmr kyverno.ResourceFilter, admissionInfo urkyverno.RequestInfo, resource unstructured.Unstructured, dynamicConfig []string, namespaceLabels map[string]string) []error {
 	var errs []error
 	if reflect.DeepEqual(admissionInfo, kyverno.RequestInfo{}) {
 		rmr.UserInfo = kyverno.UserInfo{}
@@ -354,7 +379,7 @@ func matchesResourceDescriptionMatchHelper(rmr kyverno.ResourceFilter, admission
 	return errs
 }
 
-func matchesResourceDescriptionExcludeHelper(rer kyverno.ResourceFilter, admissionInfo kyverno.RequestInfo, resource unstructured.Unstructured, dynamicConfig []string, namespaceLabels map[string]string) []error {
+func matchesResourceDescriptionExcludeHelper(rer kyverno.ResourceFilter, admissionInfo urkyverno.RequestInfo, resource unstructured.Unstructured, dynamicConfig []string, namespaceLabels map[string]string) []error {
 	var errs []error
 	// checking if resource matches the rule
 	if !reflect.DeepEqual(rer.ResourceDescription, kyverno.ResourceDescription{}) ||
@@ -427,8 +452,8 @@ func excludeResource(podControllers string, resource unstructured.Unstructured) 
 // ManagedPodResource returns true:
 // - if the policy has auto-gen annotation && resource == Pod
 // - if the auto-gen contains cronJob && resource == Job
-func ManagedPodResource(policy kyverno.ClusterPolicy, resource unstructured.Unstructured) bool {
-	podControllers, ok := policy.GetAnnotations()[PodControllersAnnotation]
+func ManagedPodResource(policy kyverno.PolicyInterface, resource unstructured.Unstructured) bool {
+	podControllers, ok := policy.GetAnnotations()[kyverno.PodControllersAnnotation]
 	if !ok || strings.ToLower(podControllers) == "none" {
 		return false
 	}
@@ -473,18 +498,23 @@ func evaluateList(jmesPath string, ctx context.EvalInterface) ([]interface{}, er
 	return l, nil
 }
 
-func ruleError(rule *kyverno.Rule, ruleType engineUtils.RuleType, msg string, err error) *response.RuleResponse {
+func ruleError(rule *kyverno.Rule, ruleType response.RuleType, msg string, err error) *response.RuleResponse {
 	msg = fmt.Sprintf("%s: %s", msg, err.Error())
-	return ruleResponse(rule, ruleType, msg, response.RuleStatusError)
+	return ruleResponse(*rule, ruleType, msg, response.RuleStatusError, nil)
 }
 
-func ruleResponse(rule *kyverno.Rule, ruleType engineUtils.RuleType, msg string, status response.RuleStatus) *response.RuleResponse {
-	return &response.RuleResponse{
+func ruleResponse(rule kyverno.Rule, ruleType response.RuleType, msg string, status response.RuleStatus, patchedResource *unstructured.Unstructured) *response.RuleResponse {
+	resp := &response.RuleResponse{
 		Name:    rule.Name,
-		Type:    ruleType.String(),
+		Type:    ruleType,
 		Message: msg,
 		Status:  status,
 	}
+
+	if rule.Mutation.Targets != nil {
+		resp.PatchedTarget = patchedResource
+	}
+	return resp
 }
 
 func incrementAppliedCount(resp *response.EngineResponse) {

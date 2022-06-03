@@ -11,20 +11,65 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/go-logr/logr"
-	common "github.com/kyverno/kyverno/pkg/common"
+	wildcard "github.com/kyverno/go-wildcard"
 	client "github.com/kyverno/kyverno/pkg/dclient"
 	engineutils "github.com/kyverno/kyverno/pkg/engine/utils"
-	"github.com/minio/pkg/wildcard"
-	"k8s.io/api/admission/v1beta1"
+	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
+	"k8s.io/client-go/discovery"
 )
 
 var regexVersion = regexp.MustCompile(`v(\d+).(\d+).(\d+)\.*`)
+
+// CopyMap creates a full copy of the target map
+func CopyMap(m map[string]interface{}) map[string]interface{} {
+	mapCopy := make(map[string]interface{})
+	for k, v := range m {
+		mapCopy[k] = v
+	}
+
+	return mapCopy
+}
+
+// CopySlice creates a full copy of the target slice
+func CopySlice(s []interface{}) []interface{} {
+	sliceCopy := make([]interface{}, len(s))
+	copy(sliceCopy, s)
+
+	return sliceCopy
+}
+
+// CopySliceOfMaps creates a full copy of the target slice
+func CopySliceOfMaps(s []map[string]interface{}) []interface{} {
+	sliceCopy := make([]interface{}, len(s))
+	for i, v := range s {
+		sliceCopy[i] = CopyMap(v)
+	}
+
+	return sliceCopy
+}
+
+func ToMap(data interface{}) (map[string]interface{}, error) {
+	if m, ok := data.(map[string]interface{}); ok {
+		return m, nil
+	}
+
+	b, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+
+	mapData := make(map[string]interface{})
+	err = json.Unmarshal(b, &mapData)
+	if err != nil {
+		return nil, err
+	}
+
+	return mapData, nil
+}
 
 // Contains checks if a string is contained in a list of string
 func contains(list []string, element string, fn func(string, string) bool) bool {
@@ -34,22 +79,6 @@ func contains(list []string, element string, fn func(string, string) bool) bool 
 		}
 	}
 	return false
-}
-
-func ContainsPod(list []string, element string) bool {
-	for _, e := range list {
-		_, k := common.GetKindFromGVK(e)
-		if k == element {
-			return true
-		}
-	}
-	return false
-}
-
-// SkipSubResources check to skip list of resources which don't have group.
-func SkipSubResources(kind string) bool {
-	s := []string{"PodExecOptions", "PodAttachOptions", "PodProxyOptions", "ServiceProxyOptions", "NodeProxyOptions"}
-	return ContainsPod(s, kind)
 }
 
 // ContainsNamepace check if namespace satisfies any list of pattern(regex)
@@ -68,15 +97,6 @@ func compareNamespaces(pattern, ns string) bool {
 
 func compareString(str, name string) bool {
 	return str == name
-}
-
-// NewKubeClient returns a new kubernetes client
-func NewKubeClient(config *rest.Config) (kubernetes.Interface, error) {
-	kclient, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, err
-	}
-	return kclient, nil
 }
 
 // CRDsInstalled checks if the Kyverno CRDs are installed or not
@@ -107,7 +127,7 @@ func isCRDInstalled(discoveryClient client.IDiscovery, kind string) bool {
 }
 
 // ExtractResources extracts the new and old resource as unstructured
-func ExtractResources(newRaw []byte, request *v1beta1.AdmissionRequest) (unstructured.Unstructured, unstructured.Unstructured, error) {
+func ExtractResources(newRaw []byte, request *admissionv1.AdmissionRequest) (unstructured.Unstructured, unstructured.Unstructured, error) {
 	var emptyResource unstructured.Unstructured
 	var newResource unstructured.Unstructured
 	var oldResource unstructured.Unstructured
@@ -196,9 +216,9 @@ func NormalizeSecret(resource *unstructured.Unstructured) (unstructured.Unstruct
 }
 
 // HigherThanKubernetesVersion compare Kubernetes client version to user given version
-func HigherThanKubernetesVersion(client *client.Client, log logr.Logger, major, minor, patch int) bool {
+func HigherThanKubernetesVersion(client discovery.ServerVersionInterface, log logr.Logger, major, minor, patch int) bool {
 	logger := log.WithName("CompareKubernetesVersion")
-	serverVersion, err := client.DiscoveryClient.GetServerVersion()
+	serverVersion, err := client.ServerVersion()
 	if err != nil {
 		logger.Error(err, "Failed to get kubernetes server version")
 		return false
