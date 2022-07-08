@@ -1,3 +1,10 @@
+kyverno (1.7.1-1kaisen) kaisen-packages; urgency=medium
+
+  * Import 1.7.1 release
+  * Update quilt patch
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Fri, 08 Jul 2022 03:09:27 +0100
+
 kyverno (1.7.0-1kaisen) kaisen-packages; urgency=medium
 
   * Import 1.7.0 release
