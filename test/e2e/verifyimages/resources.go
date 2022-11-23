@@ -144,9 +144,16 @@ spec:
       Task:
         - path: /spec/steps/*/image
     verifyImages:
-    - image: "ghcr.io/*"
-      subject: "https://github.com/*"
-      issuer: "https://token.actions.githubusercontent.com"
+    - imageReferences:
+      - "ghcr.io/*"
+      attestors:
+      - count: 1
+        entries:
+        - keyless:
+            issuer: "https://token.actions.githubusercontent.com"
+            subject: "https://github.com/*"
+            rekor:
+              url: https://rekor.sigstore.dev
       required: false
 `)
 
@@ -172,9 +179,16 @@ spec:
       Task:
         - path: /spec/steps/*/image
     verifyImages:
-    - image: "ghcr.io/*"
-      subject: "https://github.com/*"
-      issuer: "https://token.actions.githubusercontent.com"
+    - imageReferences:
+      - "ghcr.io/*"
+      attestors:
+      - count: 1
+        entries:
+        - keyless:
+            issuer: "https://token.actions.githubusercontent.com"
+            subject: "https://github.com/*"
+            rekor:
+              url: https://rekor.sigstore.dev
       required: true
 `)
 
@@ -202,4 +216,30 @@ spec:
         MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE8nXRh950IZbRj8Ra/N9sbqOPZrfM
         5/KAQN0/KjHcorm/J5yctVd7iEcnessRQjU917hmKO6JWVGHpDguIyakZA==
         -----END PUBLIC KEY----- 
+`)
+
+var cpolVerifyImages = []byte(`
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-images
+spec:
+  validationFailureAction: enforce
+  rules:
+    - name: check-image-sig
+      match:
+        any:
+        - resources:
+            kinds:
+              - Pod
+      verifyImages:
+      - image: "harbor2.zoller.com/cosign/*"
+        mutateDigest: false
+        verifyDigest: false
+        required: false
+        key: |-
+          -----BEGIN PUBLIC KEY-----
+          MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEpNlOGZ323zMlhs4bcKSpAKQvbcWi
+          5ZLRmijm6SqXDy0Fp0z0Eal+BekFnLzs8rUXUaXlhZ3hNudlgFJH+nFNMw==
+          -----END PUBLIC KEY-----
 `)

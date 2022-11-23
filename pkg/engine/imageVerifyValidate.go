@@ -4,22 +4,28 @@ import (
 	"fmt"
 	"reflect"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-
 	"github.com/go-logr/logr"
 	gojmespath "github.com/jmespath/go-jmespath"
-	kyverno "github.com/kyverno/kyverno/api/kyverno/v1"
+	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
 	"github.com/kyverno/kyverno/pkg/engine/response"
 	apiutils "github.com/kyverno/kyverno/pkg/utils/api"
 	"github.com/pkg/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-func processImageValidationRule(log logr.Logger, ctx *PolicyContext, rule *kyverno.Rule) *response.RuleResponse {
+func processImageValidationRule(log logr.Logger, ctx *PolicyContext, rule *kyvernov1.Rule) *response.RuleResponse {
 	if isDeleteRequest(ctx) {
 		return nil
 	}
 
 	log = log.WithValues("rule", rule.Name)
+	matchingImages, _, err := extractMatchingImages(ctx, rule)
+	if err != nil {
+		return ruleResponse(*rule, response.Validation, err.Error(), response.RuleStatusError, nil)
+	}
+	if len(matchingImages) == 0 {
+		return ruleResponse(*rule, response.Validation, "image verified", response.RuleStatusSkip, nil)
+	}
 	if err := LoadContext(log, rule.Context, ctx, rule.Name); err != nil {
 		if _, ok := err.(gojmespath.NotFoundError); ok {
 			log.V(3).Info("failed to load context", "reason", err.Error())
@@ -36,7 +42,7 @@ func processImageValidationRule(log logr.Logger, ctx *PolicyContext, rule *kyver
 	}
 
 	if !preconditionsPassed {
-		if ctx.Policy.GetSpec().ValidationFailureAction == kyverno.Audit {
+		if ctx.Policy.GetSpec().ValidationFailureAction == kyvernov1.Audit {
 			return nil
 		}
 
@@ -67,10 +73,10 @@ func processImageValidationRule(log logr.Logger, ctx *PolicyContext, rule *kyver
 	return ruleResponse(*rule, response.Validation, "image verified", response.RuleStatusPass, nil)
 }
 
-func validateImage(ctx *PolicyContext, imageVerify *kyverno.ImageVerification, name string, imageInfo apiutils.ImageInfo, log logr.Logger) error {
+func validateImage(ctx *PolicyContext, imageVerify *kyvernov1.ImageVerification, name string, imageInfo apiutils.ImageInfo, log logr.Logger) error {
 	image := imageInfo.String()
 	if imageVerify.VerifyDigest && imageInfo.Digest == "" {
-		log.Info("missing digest", "image", imageInfo.String())
+		log.V(2).Info("missing digest", "image", imageInfo.String())
 		return fmt.Errorf("missing digest for %s", image)
 	}
 

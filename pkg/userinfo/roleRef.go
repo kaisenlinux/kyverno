@@ -5,14 +5,13 @@ import (
 	"strings"
 
 	"github.com/kyverno/kyverno/pkg/config"
+	"github.com/kyverno/kyverno/pkg/logging"
 	"github.com/kyverno/kyverno/pkg/utils"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	labels "k8s.io/apimachinery/pkg/labels"
-	rbaclister "k8s.io/client-go/listers/rbac/v1"
-
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	rbacv1listers "k8s.io/client-go/listers/rbac/v1"
 )
 
 const (
@@ -22,8 +21,8 @@ const (
 	saPrefix = "system:serviceaccount:"
 )
 
-//GetRoleRef gets the list of roles and cluster roles for the incoming api-request
-func GetRoleRef(rbLister rbaclister.RoleBindingLister, crbLister rbaclister.ClusterRoleBindingLister, request *admissionv1.AdmissionRequest, dynamicConfig config.Configuration) ([]string, []string, error) {
+// GetRoleRef gets the list of roles and cluster roles for the incoming api-request
+func GetRoleRef(rbLister rbacv1listers.RoleBindingLister, crbLister rbacv1listers.ClusterRoleBindingLister, request *admissionv1.AdmissionRequest, dynamicConfig config.Configuration) ([]string, []string, error) {
 	keys := append(request.UserInfo.Groups, request.UserInfo.Username)
 	if utils.SliceContains(keys, dynamicConfig.GetExcludeGroupRole()...) {
 		return nil, nil, nil
@@ -77,10 +76,8 @@ func getRoleRefByClusterRoleBindings(clusterroleBindings []*rbacv1.ClusterRoleBi
 // return true directly if found a match
 // subject.kind can only be ServiceAccount, User and Group
 func matchSubjectsMap(subject rbacv1.Subject, userInfo authenticationv1.UserInfo, namespace string) bool {
-
 	if strings.Contains(userInfo.Username, saPrefix) {
 		return matchServiceAccount(subject, userInfo, namespace)
-
 	}
 	return matchUserOrGroup(subject, userInfo)
 }
@@ -92,7 +89,7 @@ func matchServiceAccount(subject rbacv1.Subject, userInfo authenticationv1.UserI
 	if userInfo.Username[len(saPrefix):] != subjectServiceAccount {
 		return false
 	}
-	log.Log.V(3).Info(fmt.Sprintf("found a matched service account not match: %s", subjectServiceAccount))
+	logging.V(3).Info(fmt.Sprintf("found a matched service account not match: %s", subjectServiceAccount))
 	return true
 }
 
@@ -101,7 +98,7 @@ func matchUserOrGroup(subject rbacv1.Subject, userInfo authenticationv1.UserInfo
 	keys := append(userInfo.Groups, userInfo.Username)
 	for _, key := range keys {
 		if subject.Name == key {
-			log.Log.V(3).Info(fmt.Sprintf("found a matched user/group '%v' in request userInfo: %v", subject.Name, keys))
+			logging.V(3).Info(fmt.Sprintf("found a matched user/group '%v' in request userInfo: %v", subject.Name, keys))
 			return true
 		}
 	}

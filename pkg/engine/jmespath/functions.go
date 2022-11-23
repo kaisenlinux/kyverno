@@ -1,10 +1,15 @@
 package jmespath
 
 import (
+	"bytes"
+	"crypto/x509"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/rand"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -16,7 +21,10 @@ import (
 	trunc "github.com/aquilax/truncate"
 	"github.com/blang/semver/v4"
 	gojmespath "github.com/jmespath/go-jmespath"
-	wildcard "github.com/kyverno/go-wildcard"
+	wildcard "github.com/kyverno/kyverno/pkg/utils/wildcard"
+	regen "github.com/zach-klippenstein/goregen"
+	"golang.org/x/crypto/cryptobyte"
+	cryptobyte_asn1 "golang.org/x/crypto/cryptobyte/asn1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -34,6 +42,11 @@ type (
 	JpType  = gojmespath.JpType
 	ArgSpec = gojmespath.ArgSpec
 )
+
+type PublicKey struct {
+	N string
+	E int
+}
 
 // function names
 var (
@@ -65,14 +78,18 @@ var (
 	parseYAML              = "parse_yaml"
 	items                  = "items"
 	objectFromLists        = "object_from_lists"
+	random                 = "random"
+	x509_decode            = "x509_decode"
 )
 
-const errorPrefix = "JMESPath function '%s': "
-const invalidArgumentTypeError = errorPrefix + "%d argument is expected of %s type"
-const genericError = errorPrefix + "%s"
-const zeroDivisionError = errorPrefix + "Zero divisor passed"
-const undefinedQuoError = errorPrefix + "Undefined quotient"
-const nonIntModuloError = errorPrefix + "Non-integer argument(s) passed for modulo"
+const (
+	errorPrefix              = "JMESPath function '%s': "
+	invalidArgumentTypeError = errorPrefix + "%d argument is expected of %s type"
+	genericError             = errorPrefix + "%s"
+	zeroDivisionError        = errorPrefix + "Zero divisor passed"
+	undefinedQuoError        = errorPrefix + "Undefined quotient"
+	nonIntModuloError        = errorPrefix + "Non-integer argument(s) passed for modulo"
+)
 
 type FunctionEntry struct {
 	Entry      *gojmespath.FunctionEntry
@@ -103,17 +120,19 @@ func (f *FunctionEntry) String() string {
 func GetFunctions() []*FunctionEntry {
 	return []*FunctionEntry{
 		{
-			Entry: &gojmespath.FunctionEntry{Name: compare,
+			Entry: &gojmespath.FunctionEntry{
+				Name: compare,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 					{Types: []JpType{JpString}},
 				},
 				Handler: jpfCompare,
 			},
-			ReturnType: []JpType{JpBool},
+			ReturnType: []JpType{JpNumber},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: equalFold,
+			Entry: &gojmespath.FunctionEntry{
+				Name: equalFold,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 					{Types: []JpType{JpString}},
@@ -123,7 +142,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpBool},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: replace,
+			Entry: &gojmespath.FunctionEntry{
+				Name: replace,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 					{Types: []JpType{JpString}},
@@ -135,7 +155,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpString},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: replaceAll,
+			Entry: &gojmespath.FunctionEntry{
+				Name: replaceAll,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 					{Types: []JpType{JpString}},
@@ -146,7 +167,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpString},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: toUpper,
+			Entry: &gojmespath.FunctionEntry{
+				Name: toUpper,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 				},
@@ -155,7 +177,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpString},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: toLower,
+			Entry: &gojmespath.FunctionEntry{
+				Name: toLower,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 				},
@@ -164,7 +187,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpString},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: trim,
+			Entry: &gojmespath.FunctionEntry{
+				Name: trim,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 					{Types: []JpType{JpString}},
@@ -174,7 +198,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpString},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: split,
+			Entry: &gojmespath.FunctionEntry{
+				Name: split,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 					{Types: []JpType{JpString}},
@@ -184,7 +209,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpArrayString},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: regexReplaceAll,
+			Entry: &gojmespath.FunctionEntry{
+				Name: regexReplaceAll,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 					{Types: []JpType{JpString, JpNumber}},
@@ -196,7 +222,8 @@ func GetFunctions() []*FunctionEntry {
 			Note:       "converts all parameters to string",
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: regexReplaceAllLiteral,
+			Entry: &gojmespath.FunctionEntry{
+				Name: regexReplaceAllLiteral,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 					{Types: []JpType{JpString, JpNumber}},
@@ -208,7 +235,8 @@ func GetFunctions() []*FunctionEntry {
 			Note:       "converts all parameters to string",
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: regexMatch,
+			Entry: &gojmespath.FunctionEntry{
+				Name: regexMatch,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 					{Types: []JpType{JpString, JpNumber}},
@@ -218,7 +246,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpBool},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: patternMatch,
+			Entry: &gojmespath.FunctionEntry{
+				Name: patternMatch,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 					{Types: []JpType{JpString, JpNumber}},
@@ -230,7 +259,8 @@ func GetFunctions() []*FunctionEntry {
 		},
 		{
 			// Validates if label (param1) would match pod/host/etc labels (param2)
-			Entry: &gojmespath.FunctionEntry{Name: labelMatch,
+			Entry: &gojmespath.FunctionEntry{
+				Name: labelMatch,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpObject}},
 					{Types: []JpType{JpObject}},
@@ -241,7 +271,8 @@ func GetFunctions() []*FunctionEntry {
 			Note:       "object arguments must be enclosed in backticks; ex. `{{request.object.spec.template.metadata.labels}}`",
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: add,
+			Entry: &gojmespath.FunctionEntry{
+				Name: add,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpAny}},
 					{Types: []JpType{JpAny}},
@@ -251,7 +282,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpAny},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: subtract,
+			Entry: &gojmespath.FunctionEntry{
+				Name: subtract,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpAny}},
 					{Types: []JpType{JpAny}},
@@ -261,7 +293,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpAny},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: multiply,
+			Entry: &gojmespath.FunctionEntry{
+				Name: multiply,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpAny}},
 					{Types: []JpType{JpAny}},
@@ -271,7 +304,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpAny},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: divide,
+			Entry: &gojmespath.FunctionEntry{
+				Name: divide,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpAny}},
 					{Types: []JpType{JpAny}},
@@ -282,7 +316,8 @@ func GetFunctions() []*FunctionEntry {
 			Note:       "divisor must be non zero",
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: modulo,
+			Entry: &gojmespath.FunctionEntry{
+				Name: modulo,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpAny}},
 					{Types: []JpType{JpAny}},
@@ -293,7 +328,8 @@ func GetFunctions() []*FunctionEntry {
 			Note:       "divisor must be non-zero, arguments must be integers",
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: base64Decode,
+			Entry: &gojmespath.FunctionEntry{
+				Name: base64Decode,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 				},
@@ -302,7 +338,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpString},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: base64Encode,
+			Entry: &gojmespath.FunctionEntry{
+				Name: base64Encode,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 				},
@@ -311,7 +348,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpString},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: timeSince,
+			Entry: &gojmespath.FunctionEntry{
+				Name: timeSince,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 					{Types: []JpType{JpString}},
@@ -322,7 +360,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpString},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: pathCanonicalize,
+			Entry: &gojmespath.FunctionEntry{
+				Name: pathCanonicalize,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 				},
@@ -331,7 +370,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpString},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: truncate,
+			Entry: &gojmespath.FunctionEntry{
+				Name: truncate,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 					{Types: []JpType{JpNumber}},
@@ -342,7 +382,8 @@ func GetFunctions() []*FunctionEntry {
 			Note:       "length argument must be enclosed in backticks; ex. \"{{request.object.metadata.name | truncate(@, `9`)}}\"",
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: semverCompare,
+			Entry: &gojmespath.FunctionEntry{
+				Name: semverCompare,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 					{Types: []JpType{JpString}},
@@ -352,7 +393,8 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpBool},
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: parseJson,
+			Entry: &gojmespath.FunctionEntry{
+				Name: parseJson,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 				},
@@ -362,7 +404,8 @@ func GetFunctions() []*FunctionEntry {
 			Note:       "decodes a valid JSON encoded string to the appropriate type. Opposite of `to_string` function",
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: parseYAML,
+			Entry: &gojmespath.FunctionEntry{
+				Name: parseYAML,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpString}},
 				},
@@ -372,7 +415,8 @@ func GetFunctions() []*FunctionEntry {
 			Note:       "decodes a valid YAML encoded string to the appropriate type provided it can be represented as JSON",
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: items,
+			Entry: &gojmespath.FunctionEntry{
+				Name: items,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpObject}},
 					{Types: []JpType{JpString}},
@@ -384,7 +428,8 @@ func GetFunctions() []*FunctionEntry {
 			Note:       "converts a map to an array of objects where each key:value is an item in the array",
 		},
 		{
-			Entry: &gojmespath.FunctionEntry{Name: objectFromLists,
+			Entry: &gojmespath.FunctionEntry{
+				Name: objectFromLists,
 				Arguments: []ArgSpec{
 					{Types: []JpType{JpArray}},
 					{Types: []JpType{JpArray}},
@@ -394,8 +439,29 @@ func GetFunctions() []*FunctionEntry {
 			ReturnType: []JpType{JpObject},
 			Note:       "converts a pair of lists containing keys and values to an object",
 		},
+		{
+			Entry: &gojmespath.FunctionEntry{
+				Name: random,
+				Arguments: []ArgSpec{
+					{Types: []JpType{JpString}},
+				},
+				Handler: jpRandom,
+			},
+			ReturnType: []JpType{JpString},
+			Note:       "Generates a random sequence of characters",
+		},
+		{
+			Entry: &gojmespath.FunctionEntry{
+				Name: x509_decode,
+				Arguments: []ArgSpec{
+					{Types: []JpType{JpString}},
+				},
+				Handler: jpX509Decode,
+			},
+			ReturnType: []JpType{JpObject},
+			Note:       "decodes an x.509 certificate to an object. you may also use this in conjunction with `base64_decode` jmespath function to decode a base64-encoded certificate",
+		},
 	}
-
 }
 
 func jpfCompare(arguments []interface{}) (interface{}, error) {
@@ -908,4 +974,71 @@ func validateArg(f string, arguments []interface{}, index int, expectedType refl
 	}
 
 	return arg, nil
+}
+
+func jpRandom(arguments []interface{}) (interface{}, error) {
+	pattern := arguments[0].(string)
+	if pattern == "" {
+		return "", errors.New("no pattern provided")
+	}
+	rand.Seed(time.Now().UnixNano())
+	ans, err := regen.Generate(pattern)
+	if err != nil {
+		return nil, err
+	}
+	return ans, nil
+}
+
+func jpX509Decode(arguments []interface{}) (interface{}, error) {
+	res := make(map[string]interface{})
+	input, err := validateArg(x509_decode, arguments, 0, reflect.String)
+	if err != nil {
+		return nil, err
+	}
+	p, _ := pem.Decode([]byte(input.String()))
+	if p == nil {
+		return res, errors.New("invalid certificate")
+	}
+
+	cert, err := x509.ParseCertificate(p.Bytes)
+	if err != nil {
+		return res, err
+	}
+
+	buf := new(bytes.Buffer)
+	if fmt.Sprint(cert.PublicKeyAlgorithm) == "RSA" {
+		spki := cryptobyte.String(cert.RawSubjectPublicKeyInfo)
+		if !spki.ReadASN1(&spki, cryptobyte_asn1.SEQUENCE) {
+			return res, errors.New("writing asn.1 element to 'spki' failed")
+		}
+		var pkAISeq cryptobyte.String
+		if !spki.ReadASN1(&pkAISeq, cryptobyte_asn1.SEQUENCE) {
+			return res, errors.New("writing asn.1 element to 'pkAISeq' failed")
+		}
+		var spk asn1.BitString
+		if !spki.ReadASN1BitString(&spk) {
+			return res, errors.New("writing asn.1 bit string to 'spk' failed")
+		}
+		kk, err := x509.ParsePKCS1PublicKey(spk.Bytes)
+		if err != nil {
+			return res, err
+		}
+
+		cert.PublicKey = PublicKey{
+			N: kk.N.String(),
+			E: kk.E,
+		}
+
+		enc := json.NewEncoder(buf)
+		err = enc.Encode(cert)
+		if err != nil {
+			return res, err
+		}
+	}
+
+	if err := json.Unmarshal(buf.Bytes(), &res); err != nil {
+		return res, err
+	}
+
+	return res, nil
 }

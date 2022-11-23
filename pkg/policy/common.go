@@ -5,21 +5,21 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
-	wildcard "github.com/kyverno/go-wildcard"
-	kyverno "github.com/kyverno/kyverno/api/kyverno/v1"
+	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
 	"github.com/kyverno/kyverno/pkg/config"
+	"github.com/kyverno/kyverno/pkg/logging"
 	"github.com/kyverno/kyverno/pkg/utils"
 	kubeutils "github.com/kyverno/kyverno/pkg/utils/kube"
+	wildcard "github.com/kyverno/kyverno/pkg/utils/wildcard"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func transformResource(resource unstructured.Unstructured) []byte {
 	data, err := resource.MarshalJSON()
 	if err != nil {
-		log.Log.Error(err, "failed to marshal resource")
+		logging.Error(err, "failed to marshal resource")
 		return nil
 	}
 	return data
@@ -50,7 +50,6 @@ func (pc *PolicyController) getResourceList(kind, namespace string, labelSelecto
 		log.Error(err, "failed to list resources", "kind", k, "namespace", namespace)
 		return nil
 	}
-
 	return resourceList
 }
 
@@ -58,7 +57,7 @@ func (pc *PolicyController) getResourceList(kind, namespace string, labelSelecto
 // - Namespaced resources across all namespaces if namespace is set to empty "", for Namespaced Kind
 // - Namespaced resources in the given namespace
 // - Cluster-wide resources for Cluster-wide Kind
-func (pc *PolicyController) getResourcesPerNamespace(kind string, namespace string, rule kyverno.Rule, log logr.Logger) map[string]unstructured.Unstructured {
+func (pc *PolicyController) getResourcesPerNamespace(kind string, namespace string, rule kyvernov1.Rule, log logr.Logger) map[string]unstructured.Unstructured {
 	resourceMap := map[string]unstructured.Unstructured{}
 
 	if kind == "Namespace" {
@@ -79,7 +78,7 @@ func (pc *PolicyController) getResourcesPerNamespace(kind string, namespace stri
 	return resourceMap
 }
 
-func (pc *PolicyController) match(r unstructured.Unstructured, rule kyverno.Rule) bool {
+func (pc *PolicyController) match(r unstructured.Unstructured, rule kyvernov1.Rule) bool {
 	if r.GetDeletionTimestamp() != nil {
 		return false
 	}
@@ -105,8 +104,8 @@ func (pc *PolicyController) match(r unstructured.Unstructured, rule kyverno.Rule
 }
 
 // ExcludeResources ...
-func excludeResources(included map[string]unstructured.Unstructured, exclude kyverno.ResourceDescription, configHandler config.Configuration, log logr.Logger) {
-	if reflect.DeepEqual(exclude, (kyverno.ResourceDescription{})) {
+func excludeResources(included map[string]unstructured.Unstructured, exclude kyvernov1.ResourceDescription, configHandler config.Configuration, log logr.Logger) {
+	if reflect.DeepEqual(exclude, (kyvernov1.ResourceDescription{})) {
 		return
 	}
 	excludeName := func(name string) Condition {

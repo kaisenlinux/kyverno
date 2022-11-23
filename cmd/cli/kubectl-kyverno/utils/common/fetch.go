@@ -1,19 +1,23 @@
 package common
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/go-git/go-billy/v5"
-	v1 "github.com/kyverno/kyverno/api/kyverno/v1"
+	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
 	"github.com/kyverno/kyverno/pkg/autogen"
-	client "github.com/kyverno/kyverno/pkg/dclient"
+	"github.com/kyverno/kyverno/pkg/clients/dclient"
 	engineutils "github.com/kyverno/kyverno/pkg/engine/utils"
 	yamlutils "github.com/kyverno/kyverno/pkg/utils/yaml"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -25,10 +29,10 @@ import (
 // the resources are fetched from
 // - local paths to resources, if given
 // - the k8s cluster, if given
-func GetResources(policies []v1.PolicyInterface, resourcePaths []string, dClient client.Interface, cluster bool, namespace string, policyReport bool) ([]*unstructured.Unstructured, error) {
+func GetResources(policies []kyvernov1.PolicyInterface, resourcePaths []string, dClient dclient.Interface, cluster bool, namespace string, policyReport bool) ([]*unstructured.Unstructured, error) {
 	resources := make([]*unstructured.Unstructured, 0)
 	var err error
-	var resourceTypesMap = make(map[string]bool)
+	resourceTypesMap := make(map[string]bool)
 	var resourceTypes []string
 
 	for _, policy := range policies {
@@ -58,7 +62,7 @@ func GetResources(policies []v1.PolicyInterface, resourcePaths []string, dClient
 	return resources, err
 }
 
-func whenClusterIsTrue(resourceTypes []string, dClient client.Interface, namespace string, resourcePaths []string, policyReport bool) ([]*unstructured.Unstructured, error) {
+func whenClusterIsTrue(resourceTypes []string, dClient dclient.Interface, namespace string, resourcePaths []string, policyReport bool) ([]*unstructured.Unstructured, error) {
 	resources := make([]*unstructured.Unstructured, 0)
 	resourceMap, err := getResourcesOfTypeFromCluster(resourceTypes, dClient, namespace)
 	if err != nil {
@@ -116,19 +120,15 @@ func whenClusterIsFalse(resourcePaths []string, policyReport bool) ([]*unstructu
 }
 
 // GetResourcesWithTest with gets matched resources by the given policies
-func GetResourcesWithTest(fs billy.Filesystem, policies []v1.PolicyInterface, resourcePaths []string, isGit bool, policyResourcePath string) ([]*unstructured.Unstructured, error) {
+func GetResourcesWithTest(fs billy.Filesystem, policies []kyvernov1.PolicyInterface, resourcePaths []string, isGit bool, policyResourcePath string) ([]*unstructured.Unstructured, error) {
 	resources := make([]*unstructured.Unstructured, 0)
-	var resourceTypesMap = make(map[string]bool)
-	var resourceTypes []string
+	resourceTypesMap := make(map[string]bool)
 	for _, policy := range policies {
 		for _, rule := range autogen.ComputeRules(policy) {
 			for _, kind := range rule.MatchResources.Kinds {
 				resourceTypesMap[kind] = true
 			}
 		}
-	}
-	for kind := range resourceTypesMap {
-		resourceTypes = append(resourceTypes, kind)
 	}
 	if len(resourcePaths) > 0 {
 		for _, resourcePath := range resourcePaths {
@@ -140,7 +140,7 @@ func GetResourcesWithTest(fs billy.Filesystem, policies []v1.PolicyInterface, re
 					fmt.Printf("Unable to open resource file: %s. error: %s", resourcePath, err)
 					continue
 				}
-				resourceBytes, err = ioutil.ReadAll(filep)
+				resourceBytes, _ = io.ReadAll(filep)
 			} else {
 				resourceBytes, err = getFileBytes(resourcePath)
 			}
@@ -155,7 +155,6 @@ func GetResourcesWithTest(fs billy.Filesystem, policies []v1.PolicyInterface, re
 			}
 
 			resources = append(resources, getResources...)
-
 		}
 	}
 	return resources, nil
@@ -190,7 +189,7 @@ func GetResource(resourceBytes []byte) ([]*unstructured.Unstructured, error) {
 	return resources, nil
 }
 
-func getResourcesOfTypeFromCluster(resourceTypes []string, dClient client.Interface, namespace string) (map[string]*unstructured.Unstructured, error) {
+func getResourcesOfTypeFromCluster(resourceTypes []string, dClient dclient.Interface, namespace string) (map[string]*unstructured.Unstructured, error) {
 	r := make(map[string]*unstructured.Unstructured)
 
 	for _, kind := range resourceTypes {
@@ -214,7 +213,6 @@ func getResourcesOfTypeFromCluster(resourceTypes []string, dClient client.Interf
 }
 
 func getFileBytes(path string) ([]byte, error) {
-
 	var (
 		file []byte
 		err  error
@@ -222,7 +220,11 @@ func getFileBytes(path string) ([]byte, error) {
 
 	if IsHTTPRegex.MatchString(path) {
 		// We accept here that a random URL might be called based on user provided input.
-		resp, err := http.Get(path) // #nosec
+		req, err := http.NewRequestWithContext(context.TODO(), http.MethodGet, path, nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return nil, err
 		}
@@ -232,14 +234,14 @@ func getFileBytes(path string) ([]byte, error) {
 			return nil, err
 		}
 
-		file, err = ioutil.ReadAll(resp.Body)
+		file, err = io.ReadAll(resp.Body)
 		if err != nil {
 			return nil, err
 		}
 	} else {
 		path = filepath.Clean(path)
 		// We accept the risk of including a user provided file here.
-		file, err = ioutil.ReadFile(path) // #nosec G304
+		file, err = os.ReadFile(path) // #nosec G304
 		if err != nil {
 			return nil, err
 		}
@@ -279,22 +281,24 @@ func convertResourceToUnstructured(resourceYaml []byte) (*unstructured.Unstructu
 }
 
 // GetPatchedResource converts raw bytes to unstructured object
-func GetPatchedResource(patchResourceBytes []byte) (patchedResource unstructured.Unstructured, err error) {
-	getPatchedResource, err := GetResource(patchResourceBytes)
-	patchedResource = *getPatchedResource[0]
-
-	return patchedResource, nil
+func GetPatchedAndGeneratedResource(resourceBytes []byte) (unstructured.Unstructured, error) {
+	getResource, err := GetResource(resourceBytes)
+	if err != nil {
+		return unstructured.Unstructured{}, err
+	}
+	resource := *getResource[0]
+	return resource, nil
 }
 
 // GetKindsFromRule will return the kinds from policy match block
-func GetKindsFromRule(rule v1.Rule) map[string]bool {
-	var resourceTypesMap = make(map[string]bool)
+func GetKindsFromRule(rule kyvernov1.Rule) map[string]bool {
+	resourceTypesMap := make(map[string]bool)
 	for _, kind := range rule.MatchResources.Kinds {
 		if strings.Contains(kind, "/") {
 			lastElement := kind[strings.LastIndex(kind, "/")+1:]
-			resourceTypesMap[strings.Title(lastElement)] = true
+			resourceTypesMap[cases.Title(language.Und, cases.NoLower).String(lastElement)] = true
 		}
-		resourceTypesMap[strings.Title(kind)] = true
+		resourceTypesMap[cases.Title(language.Und, cases.NoLower).String(kind)] = true
 	}
 
 	if rule.MatchResources.Any != nil {
@@ -302,7 +306,7 @@ func GetKindsFromRule(rule v1.Rule) map[string]bool {
 			for _, kind := range resFilter.ResourceDescription.Kinds {
 				if strings.Contains(kind, "/") {
 					lastElement := kind[strings.LastIndex(kind, "/")+1:]
-					resourceTypesMap[strings.Title(lastElement)] = true
+					resourceTypesMap[cases.Title(language.Und, cases.NoLower).String(lastElement)] = true
 				}
 				resourceTypesMap[kind] = true
 			}
@@ -314,9 +318,9 @@ func GetKindsFromRule(rule v1.Rule) map[string]bool {
 			for _, kind := range resFilter.ResourceDescription.Kinds {
 				if strings.Contains(kind, "/") {
 					lastElement := kind[strings.LastIndex(kind, "/")+1:]
-					resourceTypesMap[strings.Title(lastElement)] = true
+					resourceTypesMap[cases.Title(language.Und, cases.NoLower).String(lastElement)] = true
 				}
-				resourceTypesMap[strings.Title(kind)] = true
+				resourceTypesMap[cases.Title(language.Und, cases.NoLower).String(kind)] = true
 			}
 		}
 	}

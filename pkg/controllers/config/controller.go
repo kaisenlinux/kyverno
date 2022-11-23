@@ -1,23 +1,24 @@
 package config
 
 import (
+	"context"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/kyverno/kyverno/pkg/config"
-	kubeutils "github.com/kyverno/kyverno/pkg/utils/kube"
-	corev1 "k8s.io/api/core/v1"
+	"github.com/kyverno/kyverno/pkg/controllers"
+	controllerutils "github.com/kyverno/kyverno/pkg/utils/controller"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	corev1listers "k8s.io/client-go/listers/core/v1"
-	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
 
 const (
-	maxRetries = 10
-	workers    = 3
+	// Workers is the number of workers for this controller
+	Workers        = 3
+	ControllerName = "config-controller"
+	maxRetries     = 10
 )
 
 type controller struct {
@@ -26,106 +27,26 @@ type controller struct {
 	// listers
 	configmapLister corev1listers.ConfigMapLister
 
-	// configmapSynced returns true if the configmap shared informer has synced at least once
-	configmapSynced cache.InformerSynced
-
 	// queue
 	queue workqueue.RateLimitingInterface
 }
 
-func NewController(configmapInformer corev1informers.ConfigMapInformer, configuration config.Configuration) *controller {
+func NewController(configuration config.Configuration, configmapInformer corev1informers.ConfigMapInformer) controllers.Controller {
 	c := controller{
 		configuration:   configuration,
 		configmapLister: configmapInformer.Lister(),
-		queue:           workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "config-controller"),
+		queue:           workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), ControllerName),
 	}
-	configmapInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    c.add,
-		UpdateFunc: c.update,
-		DeleteFunc: c.delete,
-	})
-
-	c.configmapSynced = configmapInformer.Informer().HasSynced
-
+	controllerutils.AddDefaultEventHandlers(logger, configmapInformer.Informer(), c.queue)
 	return &c
 }
 
-func (c *controller) add(obj interface{}) {
-	c.enqueue(obj.(*corev1.ConfigMap))
+func (c *controller) Run(ctx context.Context, workers int) {
+	controllerutils.Run(ctx, logger, ControllerName, time.Second, c.queue, workers, maxRetries, c.reconcile)
 }
 
-func (c *controller) update(old, cur interface{}) {
-	c.enqueue(cur.(*corev1.ConfigMap))
-}
-
-func (c *controller) delete(obj interface{}) {
-	cm, ok := kubeutils.GetObjectWithTombstone(obj).(*corev1.ConfigMap)
-	if ok {
-		c.enqueue(cm)
-	} else {
-		logger.Info("Failed to get deleted object", "obj", obj)
-	}
-}
-
-func (c *controller) enqueue(obj *corev1.ConfigMap) {
-	if key, err := cache.MetaNamespaceKeyFunc(obj); err != nil {
-		logger.Error(err, "failed to compute key name")
-	} else {
-		c.queue.Add(key)
-	}
-}
-
-func (c *controller) handleErr(err error, key interface{}) {
-	if err == nil {
-		c.queue.Forget(key)
-	} else if errors.IsNotFound(err) {
-		logger.V(4).Info("Dropping update request from the queue", "key", key, "error", err.Error())
-		c.queue.Forget(key)
-	} else if c.queue.NumRequeues(key) < maxRetries {
-		logger.V(3).Info("retrying update request", "key", key, "error", err.Error())
-		c.queue.AddRateLimited(key)
-	} else {
-		logger.Error(err, "failed to process update request", "key", key)
-		c.queue.Forget(key)
-	}
-}
-
-func (c *controller) processNextWorkItem() bool {
-	if key, quit := c.queue.Get(); !quit {
-		defer c.queue.Done(key)
-		c.handleErr(c.reconcile(key.(string)), key)
-		return true
-	}
-	return false
-}
-
-func (c *controller) worker() {
-	for c.processNextWorkItem() {
-	}
-}
-
-func (c *controller) Run(stopCh <-chan struct{}) {
-	defer runtime.HandleCrash()
-	logger.Info("start")
-	defer logger.Info("shutting down")
-
-	if !cache.WaitForNamedCacheSync("config-controller", stopCh, c.configmapSynced) {
-		return
-	}
-
-	for i := 0; i < workers; i++ {
-		go wait.Until(c.worker, time.Second, stopCh)
-	}
-	<-stopCh
-}
-
-func (c *controller) reconcile(key string) error {
-	logger.Info("reconciling ...", "key", key)
-	namespace, name, err := cache.SplitMetaNamespaceKey(key)
-	if err != nil {
-		return err
-	}
-	if namespace != config.KyvernoNamespace || name != config.KyvernoConfigMapName {
+func (c *controller) reconcile(ctx context.Context, logger logr.Logger, key, namespace, name string) error {
+	if namespace != config.KyvernoNamespace() || name != config.KyvernoConfigMapName() {
 		return nil
 	}
 	configMap, err := c.configmapLister.ConfigMaps(namespace).Get(name)

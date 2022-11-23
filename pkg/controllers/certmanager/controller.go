@@ -1,143 +1,112 @@
 package certmanager
 
 import (
-	"os"
-	"reflect"
-	"strings"
+	"context"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/kyverno/kyverno/pkg/common"
 	"github.com/kyverno/kyverno/pkg/config"
+	"github.com/kyverno/kyverno/pkg/controllers"
 	"github.com/kyverno/kyverno/pkg/tls"
-	v1 "k8s.io/api/core/v1"
-	informerv1 "k8s.io/client-go/informers/core/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/cache"
+	controllerutils "github.com/kyverno/kyverno/pkg/utils/controller"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	corev1informers "k8s.io/client-go/informers/core/v1"
+	corev1listers "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/util/workqueue"
 )
 
-type Controller interface {
-	// Run starts the certManager
-	Run(stopCh <-chan struct{})
-
-	// InitTLSPemPair initializes the TLSPemPair
-	// it should be invoked by the leader
-	InitTLSPemPair()
-
-	// GetTLSPemPair gets the existing TLSPemPair from the secret
-	GetTLSPemPair() (*tls.PemPair, error)
-}
+const (
+	// Workers is the number of workers for this controller
+	Workers        = 1
+	ControllerName = "certmanager-controller"
+	maxRetries     = 10
+)
 
 type controller struct {
-	renewer     *tls.CertRenewer
-	secretQueue chan bool
+	renewer tls.CertRenewer
+
+	// listers
+	secretLister corev1listers.SecretLister
+
+	// queue
+	queue         workqueue.RateLimitingInterface
+	secretEnqueue controllerutils.EnqueueFunc
 }
 
-func NewController(secretInformer informerv1.SecretInformer, kubeClient kubernetes.Interface, certRenewer *tls.CertRenewer) (Controller, error) {
-	manager := &controller{
-		renewer:     certRenewer,
-		secretQueue: make(chan bool, 1),
+func NewController(secretInformer corev1informers.SecretInformer, certRenewer tls.CertRenewer) controllers.Controller {
+	queue := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), ControllerName)
+	c := controller{
+		renewer:       certRenewer,
+		secretLister:  secretInformer.Lister(),
+		queue:         queue,
+		secretEnqueue: controllerutils.AddDefaultEventHandlers(logger, secretInformer.Informer(), queue),
 	}
-	secretInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    manager.addSecretFunc,
-		UpdateFunc: manager.updateSecretFunc,
-	})
-	return manager, nil
+	return &c
 }
 
-func (m *controller) addSecretFunc(obj interface{}) {
-	secret := obj.(*v1.Secret)
-	if secret.GetNamespace() != config.KyvernoNamespace {
-		return
+func (c *controller) Run(ctx context.Context, workers int) {
+	// we need to enqueue our secrets in case they don't exist yet in the cluster
+	// this way we ensure the reconcile happens (hence renewal/creation)
+	if err := c.secretEnqueue(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: config.KyvernoNamespace(),
+			Name:      tls.GenerateTLSPairSecretName(),
+		},
+	}); err != nil {
+		logger.Error(err, "failed to enqueue secret", "name", tls.GenerateTLSPairSecretName())
 	}
-	val, ok := secret.GetAnnotations()[tls.SelfSignedAnnotation]
-	if !ok || val != "true" {
-		return
+	if err := c.secretEnqueue(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: config.KyvernoNamespace(),
+			Name:      tls.GenerateRootCASecretName(),
+		},
+	}); err != nil {
+		logger.Error(err, "failed to enqueue CA secret", "name", tls.GenerateRootCASecretName())
 	}
-	m.secretQueue <- true
+	controllerutils.Run(ctx, logger, ControllerName, time.Second, c.queue, workers, maxRetries, c.reconcile, c.ticker)
 }
 
-func (m *controller) updateSecretFunc(oldObj interface{}, newObj interface{}) {
-	old := oldObj.(*v1.Secret)
-	new := newObj.(*v1.Secret)
-	if new.GetNamespace() != config.KyvernoNamespace {
-		return
-	}
-	val, ok := new.GetAnnotations()[tls.SelfSignedAnnotation]
-	if !ok || val != "true" {
-		return
-	}
-	if reflect.DeepEqual(old.DeepCopy().Data, new.DeepCopy().Data) {
-		return
-	}
-	m.secretQueue <- true
-	logger.V(4).Info("secret updated, reconciling webhook configurations")
-}
-
-func (m *controller) InitTLSPemPair() {
-	_, err := m.renewer.InitTLSPemPair()
-	if err != nil {
-		logger.Error(err, "initialization error")
-		os.Exit(1)
-	}
-}
-
-func (m *controller) GetTLSPemPair() (*tls.PemPair, error) {
-	var keyPair *tls.PemPair
-	var err error
-	retryReadTLS := func() error {
-		keyPair, err = tls.ReadTLSPair(m.renewer.ClientConfig(), m.renewer.Client())
-		if err != nil {
-			return err
-		}
-		logger.Info("read TLS pem pair from the secret")
+func (c *controller) reconcile(ctx context.Context, logger logr.Logger, key, namespace, name string) error {
+	if namespace != config.KyvernoNamespace() {
 		return nil
 	}
-	msg := "failed to read TLS pair"
-	f := common.RetryFunc(time.Second, time.Minute, retryReadTLS, msg, logger.WithName("GetTLSPemPair/Retry"))
-	return keyPair, f()
+	if name != tls.GenerateTLSPairSecretName() && name != tls.GenerateRootCASecretName() {
+		return nil
+	}
+	return c.renewCertificates()
 }
 
-func (m *controller) Run(stopCh <-chan struct{}) {
-	logger.Info("start managing certificate")
+func (c *controller) ticker(ctx context.Context, logger logr.Logger) {
 	certsRenewalTicker := time.NewTicker(tls.CertRenewalInterval)
 	defer certsRenewalTicker.Stop()
 	for {
 		select {
 		case <-certsRenewalTicker.C:
-			valid, err := m.renewer.ValidCert()
-			if err != nil {
-				logger.Error(err, "failed to validate cert")
-				if !strings.Contains(err.Error(), tls.ErrorsNotFound) {
-					continue
+			list, err := c.secretLister.List(labels.Everything())
+			if err == nil {
+				for _, secret := range list {
+					if err := c.secretEnqueue(secret); err != nil {
+						logger.Error(err, "failed to enqueue secret", "name", secret.Name)
+					}
 				}
+			} else {
+				logger.Error(err, "falied to list secrets")
 			}
-			if valid {
-				continue
-			}
-			logger.Info("rootCA is about to expire, trigger a rolling update to renew the cert")
-			if err := m.renewer.RollingUpdate(); err != nil {
-				logger.Error(err, "unable to trigger a rolling update to renew rootCA, force restarting")
-				os.Exit(1)
-			}
-		case <-m.secretQueue:
-			valid, err := m.renewer.ValidCert()
-			if err != nil {
-				logger.Error(err, "failed to validate cert")
-				if !strings.Contains(err.Error(), tls.ErrorsNotFound) {
-					continue
-				}
-			}
-			if valid {
-				continue
-			}
-			logger.Info("rootCA has changed, updating webhook configurations")
-			if err := m.renewer.RollingUpdate(); err != nil {
-				logger.Error(err, "unable to trigger a rolling update to re-register webhook server, force restarting")
-				os.Exit(1)
-			}
-		case <-stopCh:
-			logger.V(2).Info("stopping cert renewer")
+		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+func (c *controller) renewCertificates() error {
+	if err := common.RetryFunc(time.Second, 5*time.Second, c.renewer.RenewCA, "failed to renew CA", logger)(); err != nil {
+		return err
+	}
+	if err := common.RetryFunc(time.Second, 5*time.Second, c.renewer.RenewTLS, "failed to renew TLS", logger)(); err != nil {
+		return err
+	}
+	return nil
 }

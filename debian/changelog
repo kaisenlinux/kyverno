@@ -1,3 +1,11 @@
+kyverno (1.8.2-1kaisen) kaisen-packages; urgency=medium
+
+  * Import the 1.8.2 release
+  * Update the quilt patch
+  * Update the golang-go version required
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Wed, 23 Nov 2022 16:48:49 +0100
+
 kyverno (1.7.3-1kaisen) kaisen-packages; urgency=medium
 
   * Import the 1.7.3 release

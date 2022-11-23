@@ -1,3 +1,1 @@
-kyverno usr/bin
-kubectl-kyverno usr/bin
 debian/kyverno.png usr/share/pixmaps

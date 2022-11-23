@@ -3,15 +3,15 @@ package engine
 import (
 	"time"
 
-	urkyverno "github.com/kyverno/kyverno/api/kyverno/v1beta1"
+	kyvernov1beta1 "github.com/kyverno/kyverno/api/kyverno/v1beta1"
 	"github.com/kyverno/kyverno/pkg/autogen"
 	"github.com/kyverno/kyverno/pkg/engine/response"
+	"github.com/kyverno/kyverno/pkg/logging"
 	"k8s.io/client-go/tools/cache"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // GenerateResponse checks for validity of generate rule on the resource
-func GenerateResponse(policyContext *PolicyContext, gr urkyverno.UpdateRequest) (resp *response.EngineResponse) {
+func GenerateResponse(policyContext *PolicyContext, gr kyvernov1beta1.UpdateRequest) (resp *response.EngineResponse) {
 	policyStartTime := time.Now()
 	return filterGenerateRules(policyContext, gr.Spec.Policy, policyStartTime)
 }
@@ -23,7 +23,7 @@ func filterGenerateRules(policyContext *PolicyContext, policyNameKey string, sta
 	apiVersion := policyContext.NewResource.GetAPIVersion()
 	pNamespace, pName, err := cache.SplitMetaNamespaceKey(policyNameKey)
 	if err != nil {
-		log.Log.Error(err, "failed to spilt name and namespace", policyNameKey)
+		logging.Error(err, "failed to spilt name and namespace", policyNameKey)
 	}
 
 	resp := &response.EngineResponse{
@@ -45,7 +45,7 @@ func filterGenerateRules(policyContext *PolicyContext, policyNameKey string, sta
 	}
 
 	if policyContext.ExcludeResourceFunc(kind, namespace, name) {
-		log.Log.WithName("Generate").Info("resource excluded", "kind", kind, "namespace", namespace, "name", name)
+		logging.WithName("Generate").Info("resource excluded", "kind", kind, "namespace", namespace, "name", name)
 		return resp
 	}
 

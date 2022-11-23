@@ -7,7 +7,7 @@ import (
 	backoff "github.com/cenkalti/backoff"
 	kyvernov1beta1 "github.com/kyverno/kyverno/api/kyverno/v1beta1"
 	"github.com/kyverno/kyverno/pkg/background/common"
-	kyvernoclient "github.com/kyverno/kyverno/pkg/client/clientset/versioned"
+	"github.com/kyverno/kyverno/pkg/client/clientset/versioned"
 	kyvernov1beta1informers "github.com/kyverno/kyverno/pkg/client/informers/externalversions/kyverno/v1beta1"
 	kyvernov1beta1listers "github.com/kyverno/kyverno/pkg/client/listers/kyverno/v1beta1"
 	"github.com/kyverno/kyverno/pkg/config"
@@ -24,17 +24,17 @@ type Generator interface {
 // generator defines the implementation to manage update request resource
 type generator struct {
 	// clients
-	client kyvernoclient.Interface
+	client versioned.Interface
 
 	// listers
 	urLister kyvernov1beta1listers.UpdateRequestNamespaceLister
 }
 
 // NewGenerator returns a new instance of UpdateRequest resource generator
-func NewGenerator(client kyvernoclient.Interface, urInformer kyvernov1beta1informers.UpdateRequestInformer) Generator {
+func NewGenerator(client versioned.Interface, urInformer kyvernov1beta1informers.UpdateRequestInformer) Generator {
 	return &generator{
 		client:   client,
-		urLister: urInformer.Lister().UpdateRequests(config.KyvernoNamespace),
+		urLister: urInformer.Lister().UpdateRequests(config.KyvernoNamespace()),
 	}
 }
 
@@ -97,13 +97,13 @@ func (g *generator) tryApplyResource(urSpec kyvernov1beta1.UpdateRequestSpec) er
 		l.V(4).Info("creating new UpdateRequest")
 		ur := kyvernov1beta1.UpdateRequest{
 			ObjectMeta: metav1.ObjectMeta{
-				Namespace:    config.KyvernoNamespace,
+				Namespace:    config.KyvernoNamespace(),
 				GenerateName: "ur-",
 				Labels:       queryLabels,
 			},
 			Spec: urSpec,
 		}
-		if new, err := g.client.KyvernoV1beta1().UpdateRequests(config.KyvernoNamespace).Create(context.TODO(), &ur, metav1.CreateOptions{}); err != nil {
+		if new, err := g.client.KyvernoV1beta1().UpdateRequests(config.KyvernoNamespace()).Create(context.TODO(), &ur, metav1.CreateOptions{}); err != nil {
 			l.V(4).Error(err, "failed to create UpdateRequest, retrying", "name", ur.GetGenerateName(), "namespace", ur.GetNamespace())
 			return err
 		} else {

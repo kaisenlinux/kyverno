@@ -6,14 +6,13 @@ import (
 	"regexp"
 	"strconv"
 
-	kyverno "github.com/kyverno/kyverno/api/kyverno/v1"
-	"github.com/pkg/errors"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-
 	"github.com/go-logr/logr"
-	wildcard "github.com/kyverno/go-wildcard"
-	client "github.com/kyverno/kyverno/pkg/dclient"
+	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
+	"github.com/kyverno/kyverno/pkg/clients/dclient"
 	engineutils "github.com/kyverno/kyverno/pkg/engine/utils"
+	"github.com/kyverno/kyverno/pkg/logging"
+	wildcard "github.com/kyverno/kyverno/pkg/utils/wildcard"
+	"github.com/pkg/errors"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
@@ -84,7 +83,7 @@ func contains(list []string, element string, fn func(string, string) bool) bool 
 
 // ContainsNamepace check if namespace satisfies any list of pattern(regex)
 func ContainsNamepace(patterns []string, ns string) bool {
-	return contains(patterns, ns, compareNamespaces)
+	return contains(patterns, ns, comparePatterns)
 }
 
 // ContainsString checks if the string is contained in the list
@@ -92,7 +91,11 @@ func ContainsString(list []string, element string) bool {
 	return contains(list, element, compareString)
 }
 
-func compareNamespaces(pattern, ns string) bool {
+func ContainsWildcardPatterns(patterns []string, key string) bool {
+	return contains(patterns, key, comparePatterns)
+}
+
+func comparePatterns(pattern, ns string) bool {
 	return wildcard.Match(pattern, ns)
 }
 
@@ -101,8 +104,8 @@ func compareString(str, name string) bool {
 }
 
 // CRDsInstalled checks if the Kyverno CRDs are installed or not
-func CRDsInstalled(discovery client.IDiscovery) bool {
-	kyvernoCRDs := []string{"ClusterPolicy", "ClusterPolicyReport", "PolicyReport", "ClusterReportChangeRequest", "ReportChangeRequest"}
+func CRDsInstalled(discovery dclient.IDiscovery) bool {
+	kyvernoCRDs := []string{"ClusterPolicy", "ClusterPolicyReport", "PolicyReport", "AdmissionReport", "BackgroundScanReport", "ClusterAdmissionReport", "ClusterBackgroundScanReport"}
 	for _, crd := range kyvernoCRDs {
 		if !isCRDInstalled(discovery, crd) {
 			return false
@@ -112,18 +115,15 @@ func CRDsInstalled(discovery client.IDiscovery) bool {
 	return true
 }
 
-func isCRDInstalled(discoveryClient client.IDiscovery, kind string) bool {
+func isCRDInstalled(discoveryClient dclient.IDiscovery, kind string) bool {
 	gvr, err := discoveryClient.GetGVRFromKind(kind)
 	if gvr.Empty() {
 		if err == nil {
 			err = fmt.Errorf("not found")
 		}
-
-		log.Log.Error(err, "failed to retrieve CRD", "kind", kind)
+		logging.Error(err, "failed to retrieve CRD", "kind", kind)
 		return false
 	}
-
-	log.Log.Info("CRD found", "gvr", gvr.String())
 	return true
 }
 
@@ -266,8 +266,7 @@ func isVersionHigher(version string, major int, minor int, patch int) (bool, err
 
 // SliceContains checks whether values are contained in slice
 func SliceContains(slice []string, values ...string) bool {
-
-	var sliceElementsMap = make(map[string]bool, len(slice))
+	sliceElementsMap := make(map[string]bool, len(slice))
 	for _, sliceElement := range slice {
 		sliceElementsMap[sliceElement] = true
 	}
@@ -311,12 +310,12 @@ func ApiextensionsJsonToKyvernoConditions(original apiextensions.JSON) (interfac
 		return nil, fmt.Errorf("error occurred while marshalling %s: %+v", path, err)
 	}
 
-	var kyvernoOldConditions []kyverno.Condition
+	var kyvernoOldConditions []kyvernov1.Condition
 	if err = json.Unmarshal(jsonByte, &kyvernoOldConditions); err == nil {
 		var validConditionOperator bool
 
 		for _, jsonOp := range kyvernoOldConditions {
-			for _, validOp := range kyverno.ConditionOperators {
+			for _, validOp := range kyvernov1.ConditionOperators {
 				if jsonOp.Operator == validOp {
 					validConditionOperator = true
 				}
@@ -330,7 +329,7 @@ func ApiextensionsJsonToKyvernoConditions(original apiextensions.JSON) (interfac
 		return kyvernoOldConditions, nil
 	}
 
-	var kyvernoAnyAllConditions kyverno.AnyAllConditions
+	var kyvernoAnyAllConditions kyvernov1.AnyAllConditions
 	if err = json.Unmarshal(jsonByte, &kyvernoAnyAllConditions); err == nil {
 		// checking if unknown fields exist or not
 		err = unknownFieldChecker(jsonByte, path)
@@ -343,17 +342,51 @@ func ApiextensionsJsonToKyvernoConditions(original apiextensions.JSON) (interfac
 }
 
 func OverrideRuntimeErrorHandler() {
-	logger := log.Log.WithName("RuntimeErrorHandler")
+	logger := logging.WithName("RuntimeErrorHandler")
 	if len(runtime.ErrorHandlers) > 0 {
 		runtime.ErrorHandlers[0] = func(err error) {
-			logger.V(6).Info("runtime error: %s", err)
+			logger.V(6).Info("runtime error", "msg", err.Error())
 		}
-
 	} else {
 		runtime.ErrorHandlers = []func(err error){
 			func(err error) {
-				logger.V(6).Info("runtime error: %s", err)
+				logger.V(6).Info("runtime error", "msg", err.Error())
 			},
 		}
 	}
+}
+
+func SeperateWildcards(l []string) (lw []string, rl []string) {
+	for _, val := range l {
+		if wildcard.ContainsWildcard(val) {
+			lw = append(lw, val)
+		} else {
+			rl = append(rl, val)
+		}
+	}
+	return lw, rl
+}
+
+func CheckWildcardNamespaces(patterns []string, ns []string) (string, string, bool) {
+	for _, n := range ns {
+		pat, element, boolval := containsNamespaceWithStringReturn(patterns, n)
+		if boolval {
+			return pat, element, true
+		}
+	}
+	return "", "", false
+}
+
+func containsWithStringReturn(list []string, element string, fn func(string, string) bool) (string, string, bool) {
+	for _, e := range list {
+		if fn(e, element) {
+			return e, element, true
+		}
+	}
+	return "", "", false
+}
+
+// containsNamespaceWithStringReturn check if namespace satisfies any list of pattern(regex)
+func containsNamespaceWithStringReturn(patterns []string, ns string) (string, string, bool) {
+	return containsWithStringReturn(patterns, ns, comparePatterns)
 }

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	v1 "github.com/kyverno/kyverno/api/kyverno/v1"
+	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
 	"github.com/kyverno/kyverno/pkg/engine/response"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -36,13 +36,13 @@ func buildPolicyEventMessage(resp *response.RuleResponse, resource response.Reso
 	}
 
 	if resp.Status == response.RuleStatusError && resp.Message != "" {
-		fmt.Fprintf(&b, "; %s", resp.Status.String())
+		fmt.Fprintf(&b, "; %s", resp.Message)
 	}
 
 	return b.String()
 }
 
-func getPolicyKind(policy v1.PolicyInterface) string {
+func getPolicyKind(policy kyvernov1.PolicyInterface) string {
 	if policy.IsNamespaced() {
 		return "Policy"
 	}

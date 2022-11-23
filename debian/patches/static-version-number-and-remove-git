@@ -1,33 +1,33 @@
 Author: Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>
 
---- kyverno-1.7.0.orig/Makefile
-+++ kyverno-1.7.0/Makefile
-@@ -4,14 +4,14 @@
- # DEFAULTS
- ##################################
+--- kyverno-1.8.2.orig/Makefile
++++ kyverno-1.8.2/Makefile
+@@ -4,12 +4,12 @@
+ # DEFAULTS #
+ ############
  
--GIT_VERSION := $(shell git describe --match "v[0-9]*" --tags $(git rev-list --tags --max-count=1))
--GIT_VERSION_DEV := $(shell git describe --match "[0-9].[0-9]-dev*")
--GIT_BRANCH := $(shell git branch | grep \* | cut -d ' ' -f2)
--GIT_HASH := $(GIT_BRANCH)/$(shell git log -1 --pretty=format:"%H")
-+#GIT_VERSION := $(shell git describe --match "v[0-9]*" --tags $(git rev-list --tags --max-count=1))
-+#GIT_VERSION_DEV := $(shell git describe --match "[0-9].[0-9]-dev*")
-+#GIT_BRANCH := $(shell git branch | grep \* | cut -d ' ' -f2)
-+#GIT_HASH := $(GIT_BRANCH)/$(shell git log -1 --pretty=format:"%H")
- TIMESTAMP := $(shell date '+%Y-%m-%d_%I:%M:%S%p')
- CONTROLLER_GEN=controller-gen
- CONTROLLER_GEN_REQ_VERSION := v0.8.0
--VERSION ?= $(shell git describe --match "v[0-9]*")
-+VERSION ?= 1.7.3
+-GIT_VERSION          := $(shell git describe --match "v[0-9]*" --tags $(git rev-list --tags --max-count=1))
+-GIT_VERSION_DEV      := $(shell git describe --match "[0-9].[0-9]-dev*")
+-GIT_BRANCH           := $(shell git branch | grep \* | cut -d ' ' -f2)
+-GIT_HASH             := $(GIT_BRANCH)/$(shell git log -1 --pretty=format:"%H")
++#GIT_VERSION          := $(shell git describe --match "v[0-9]*" --tags $(git rev-list --tags --max-count=1))
++#GIT_VERSION_DEV      := $(shell git describe --match "[0-9].[0-9]-dev*")
++#GIT_BRANCH           := $(shell git branch | grep \* | cut -d ' ' -f2)
++#GIT_HASH             := $(GIT_BRANCH)/$(shell git log -1 --pretty=format:"%H")
+ TIMESTAMP            := $(shell date '+%Y-%m-%d_%I:%M:%S%p')
+-VERSION              ?= $(shell git describe --match "v[0-9]*")
++VERSION              ?= 1.8.2
+ REGISTRY             ?= ghcr.io
+ REPO                 ?= kyverno
+ IMAGE_TAG_LATEST_DEV  = $(shell git describe --match "[0-9].[0-9]-dev*" | cut -d '-' -f-2)
+@@ -142,8 +142,8 @@ KYVERNO_BIN    := $(KYVERNO_DIR)/kyverno
+ KYVERNOPRE_BIN := $(KYVERNOPRE_DIR)/kyvernopre
+ CLI_BIN        := $(CLI_DIR)/kubectl-kyverno
+ PACKAGE        ?= github.com/kyverno/kyverno
+-CGO_ENABLED    ?= 0 
+-LD_FLAGS        = "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=$(GIT_VERSION) -X $(PACKAGE)/pkg/version.BuildHash=$(GIT_HASH) -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
++CGO_ENABLED    ?= 0
++LD_FLAGS        = "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=1.8.2 -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
+ LD_FLAGS_DEV    = "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=$(GIT_VERSION_DEV) -X $(PACKAGE)/pkg/version.BuildHash=$(GIT_HASH) -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
  
- REGISTRY?=ghcr.io
- REPO=$(REGISTRY)/kyverno
-@@ -25,7 +25,7 @@ else
- SED=sed
- endif
- PACKAGE ?=github.com/kyverno/kyverno
--LD_FLAGS="-s -w -X $(PACKAGE)/pkg/version.BuildVersion=$(GIT_VERSION) -X $(PACKAGE)/pkg/version.BuildHash=$(GIT_HASH) -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
-+LD_FLAGS="-s -w -X $(PACKAGE)/pkg/version.BuildVersion=$(VERSION) -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
- LD_FLAGS_DEV="-s -w -X $(PACKAGE)/pkg/version.BuildVersion=$(GIT_VERSION_DEV) -X $(PACKAGE)/pkg/version.BuildHash=$(GIT_HASH) -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
- K8S_VERSION ?= $(shell kubectl version --short | grep -i server | cut -d" " -f3 | cut -c2-)
- export K8S_VERSION
+ .PHONY: fmt

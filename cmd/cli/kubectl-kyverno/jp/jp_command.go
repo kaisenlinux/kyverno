@@ -3,7 +3,7 @@ package jp
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,7 +37,7 @@ func Command() *cobra.Command {
 			// https://github.com/jmespath/jp/blob/54882e03bd277fc4475a677fab1d35eaa478b839/jp.go
 			var expression string
 			if exprFile != "" {
-				byteExpr, err := ioutil.ReadFile(filepath.Clean(exprFile))
+				byteExpr, err := os.ReadFile(filepath.Clean(exprFile))
 				if err != nil {
 					return fmt.Errorf("error opening expression file: %w", err)
 				}
@@ -64,7 +64,7 @@ func Command() *cobra.Command {
 			}
 			var input interface{}
 			if filename != "" {
-				f, err := ioutil.ReadFile(filename)
+				f, err := os.ReadFile(filepath.Clean(filename))
 				if err != nil {
 					return fmt.Errorf("error opening input file: %w", err)
 				}
@@ -72,7 +72,7 @@ func Command() *cobra.Command {
 					return fmt.Errorf("error parsing input json: %w", err)
 				}
 			} else {
-				f, err := ioutil.ReadAll(os.Stdin)
+				f, err := io.ReadAll(os.Stdin)
 				if err != nil {
 					return fmt.Errorf("error opening input file: %w", err)
 				}
@@ -116,14 +116,14 @@ func Command() *cobra.Command {
 	cmd.Flags().BoolVarP(&unquoted, "unquoted", "u", false, "If the final result is a string, it will be printed without quotes")
 	cmd.Flags().BoolVar(&ast, "ast", false, "Only print the AST of the parsed expression.  Do not rely on this output, only useful for debugging purposes")
 	cmd.Flags().StringVarP(&exprFile, "expr-file", "e", "", "Read JMESPath expression from the specified file")
-	cmd.Flags().StringVarP(&filename, "filename", "f", "", "Accepts input as JSON file or YAML file instead of stdin")
+	cmd.Flags().StringVarP(&filename, "filename", "f", "", "Read input from a JSON or YAML file instead of stdin")
 	return cmd
 }
 
 func printFunctionList() {
 	functions := []string{}
 	for _, function := range jmespath.GetFunctions() {
-		functions = append(functions, string(function.String()))
+		functions = append(functions, function.String())
 	}
 	sort.Strings(functions)
 	fmt.Println(strings.Join(functions, "\n"))
