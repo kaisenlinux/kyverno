@@ -1,3 +1,11 @@
+kyverno (1.8.5-1kaisen) kaisen-packages; urgency=medium
+
+  * Import the 1.8.5 version
+  * Improvements of the packaging
+  * Update the quilt patch
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Fri, 13 Jan 2023 01:35:39 +0100
+
 kyverno (1.8.2-1kaisen) kaisen-packages; urgency=medium
 
   * Import the 1.8.2 release

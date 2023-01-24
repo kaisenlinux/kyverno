@@ -20,7 +20,6 @@ spec:
   names:
     categories:
     - kyverno
-    - all
     kind: AdmissionReport
     listKind: AdmissionReportList
     plural: admissionreports
@@ -62,6 +61,10 @@ spec:
       type: date
     - jsonPath: .metadata.labels['audit\.kyverno\.io/resource\.hash']
       name: Hash
+      priority: 1
+      type: string
+    - jsonPath: .metadata.labels['audit\.kyverno\.io/report\.aggregate']
+      name: AGGREGATE
       priority: 1
       type: string
     name: v1alpha2
@@ -282,7 +285,6 @@ spec:
   names:
     categories:
     - kyverno
-    - all
     kind: BackgroundScanReport
     listKind: BackgroundScanReportList
     plural: backgroundscanreports
@@ -514,7 +516,6 @@ spec:
   names:
     categories:
     - kyverno
-    - all
     kind: ClusterAdmissionReport
     listKind: ClusterAdmissionReportList
     plural: clusteradmissionreports
@@ -556,6 +557,10 @@ spec:
       type: date
     - jsonPath: .metadata.labels['audit\.kyverno\.io/resource\.hash']
       name: Hash
+      priority: 1
+      type: string
+    - jsonPath: .metadata.labels['audit\.kyverno\.io/report\.aggregate']
+      name: AGGREGATE
       priority: 1
       type: string
     name: v1alpha2
@@ -776,7 +781,6 @@ spec:
   names:
     categories:
     - kyverno
-    - all
     kind: ClusterBackgroundScanReport
     listKind: ClusterBackgroundScanReportList
     plural: clusterbackgroundscanreports
@@ -1008,7 +1012,6 @@ spec:
   names:
     categories:
     - kyverno
-    - all
     kind: ClusterPolicy
     listKind: ClusterPolicyList
     plural: clusterpolicies
@@ -2563,6 +2566,95 @@ spec:
                             items:
                               description: Attestation are checks for signed in-toto Statements that are used to verify the image. See https://github.com/in-toto/attestation. Kyverno fetches signed attestations from the OCI registry and decodes them into a list of Statements.
                               properties:
+                                attestors:
+                                  description: Attestors specify the required attestors (i.e. authorities)
+                                  items:
+                                    properties:
+                                      count:
+                                        description: Count specifies the required number of entries that must match. If the count is null, all entries must match (a logical AND). If the count is 1, at least one entry must match (a logical OR). If the count contains a value N, then N must be less than or equal to the size of entries, and at least N entries must match.
+                                        minimum: 1
+                                        type: integer
+                                      entries:
+                                        description: Entries contains the available attestors. An attestor can be a static key, attributes for keyless verification, or a nested attestor declaration.
+                                        items:
+                                          properties:
+                                            annotations:
+                                              additionalProperties:
+                                                type: string
+                                              description: Annotations are used for image verification. Every specified key-value pair must exist and match in the verified payload. The payload may contain other key-value pairs.
+                                              type: object
+                                            attestor:
+                                              description: Attestor is a nested AttestorSet used to specify a more complex set of match authorities
+                                              x-kubernetes-preserve-unknown-fields: true
+                                            certificates:
+                                              description: Certificates specifies one or more certificates
+                                              properties:
+                                                cert:
+                                                  description: Certificate is an optional PEM encoded public certificate.
+                                                  type: string
+                                                certChain:
+                                                  description: CertificateChain is an optional PEM encoded set of certificates used to verify
+                                                  type: string
+                                                rekor:
+                                                  description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                  properties:
+                                                    url:
+                                                      description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                      type: string
+                                                  required:
+                                                  - url
+                                                  type: object
+                                              type: object
+                                            keyless:
+                                              description: Keyless is a set of attribute used to verify a Sigstore keyless attestor. See https://github.com/sigstore/cosign/blob/main/KEYLESS.md.
+                                              properties:
+                                                additionalExtensions:
+                                                  additionalProperties:
+                                                    type: string
+                                                  description: AdditionalExtensions are certificate-extensions used for keyless signing.
+                                                  type: object
+                                                issuer:
+                                                  description: Issuer is the certificate issuer used for keyless signing.
+                                                  type: string
+                                                rekor:
+                                                  description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked and a root certificate chain is expected instead. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                  properties:
+                                                    url:
+                                                      description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                      type: string
+                                                  required:
+                                                  - url
+                                                  type: object
+                                                roots:
+                                                  description: Roots is an optional set of PEM encoded trusted root certificates. If not provided, the system roots are used.
+                                                  type: string
+                                                subject:
+                                                  description: Subject is the verified identity used for keyless signing, for example the email address
+                                                  type: string
+                                              type: object
+                                            keys:
+                                              description: Keys specifies one or more public keys
+                                              properties:
+                                                publicKeys:
+                                                  description: Keys is a set of X.509 public keys used to verify image signatures. The keys can be directly specified or can be a variable reference to a key specified in a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/). When multiple keys are specified each key is processed as a separate staticKey entry (.attestors[*].entries.keys) within the set of attestors and the count is applied across the keys.
+                                                  type: string
+                                                rekor:
+                                                  description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                  properties:
+                                                    url:
+                                                      description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                      type: string
+                                                  required:
+                                                  - url
+                                                  type: object
+                                              type: object
+                                            repository:
+                                              description: Repository is an optional alternate OCI repository to use for signatures and attestations that match this rule. If specified Repository will override other OCI image repository locations for this Attestor.
+                                              type: string
+                                          type: object
+                                        type: array
+                                    type: object
+                                  type: array
                                 conditions:
                                   description: Conditions are used to verify attributes within a Predicate. If no Conditions are specified the attestation check is satisfied as long there are predicates that match the predicate type.
                                   items:
@@ -2639,6 +2731,8 @@ spec:
                                 predicateType:
                                   description: PredicateType defines the type of Predicate contained within the Statement.
                                   type: string
+                              required:
+                              - predicateType
                               type: object
                             type: array
                           attestors:
@@ -4300,6 +4394,95 @@ spec:
                                 items:
                                   description: Attestation are checks for signed in-toto Statements that are used to verify the image. See https://github.com/in-toto/attestation. Kyverno fetches signed attestations from the OCI registry and decodes them into a list of Statements.
                                   properties:
+                                    attestors:
+                                      description: Attestors specify the required attestors (i.e. authorities)
+                                      items:
+                                        properties:
+                                          count:
+                                            description: Count specifies the required number of entries that must match. If the count is null, all entries must match (a logical AND). If the count is 1, at least one entry must match (a logical OR). If the count contains a value N, then N must be less than or equal to the size of entries, and at least N entries must match.
+                                            minimum: 1
+                                            type: integer
+                                          entries:
+                                            description: Entries contains the available attestors. An attestor can be a static key, attributes for keyless verification, or a nested attestor declaration.
+                                            items:
+                                              properties:
+                                                annotations:
+                                                  additionalProperties:
+                                                    type: string
+                                                  description: Annotations are used for image verification. Every specified key-value pair must exist and match in the verified payload. The payload may contain other key-value pairs.
+                                                  type: object
+                                                attestor:
+                                                  description: Attestor is a nested AttestorSet used to specify a more complex set of match authorities
+                                                  x-kubernetes-preserve-unknown-fields: true
+                                                certificates:
+                                                  description: Certificates specifies one or more certificates
+                                                  properties:
+                                                    cert:
+                                                      description: Certificate is an optional PEM encoded public certificate.
+                                                      type: string
+                                                    certChain:
+                                                      description: CertificateChain is an optional PEM encoded set of certificates used to verify
+                                                      type: string
+                                                    rekor:
+                                                      description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                      properties:
+                                                        url:
+                                                          description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                          type: string
+                                                      required:
+                                                      - url
+                                                      type: object
+                                                  type: object
+                                                keyless:
+                                                  description: Keyless is a set of attribute used to verify a Sigstore keyless attestor. See https://github.com/sigstore/cosign/blob/main/KEYLESS.md.
+                                                  properties:
+                                                    additionalExtensions:
+                                                      additionalProperties:
+                                                        type: string
+                                                      description: AdditionalExtensions are certificate-extensions used for keyless signing.
+                                                      type: object
+                                                    issuer:
+                                                      description: Issuer is the certificate issuer used for keyless signing.
+                                                      type: string
+                                                    rekor:
+                                                      description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked and a root certificate chain is expected instead. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                      properties:
+                                                        url:
+                                                          description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                          type: string
+                                                      required:
+                                                      - url
+                                                      type: object
+                                                    roots:
+                                                      description: Roots is an optional set of PEM encoded trusted root certificates. If not provided, the system roots are used.
+                                                      type: string
+                                                    subject:
+                                                      description: Subject is the verified identity used for keyless signing, for example the email address
+                                                      type: string
+                                                  type: object
+                                                keys:
+                                                  description: Keys specifies one or more public keys
+                                                  properties:
+                                                    publicKeys:
+                                                      description: Keys is a set of X.509 public keys used to verify image signatures. The keys can be directly specified or can be a variable reference to a key specified in a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/). When multiple keys are specified each key is processed as a separate staticKey entry (.attestors[*].entries.keys) within the set of attestors and the count is applied across the keys.
+                                                      type: string
+                                                    rekor:
+                                                      description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                      properties:
+                                                        url:
+                                                          description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                          type: string
+                                                      required:
+                                                      - url
+                                                      type: object
+                                                  type: object
+                                                repository:
+                                                  description: Repository is an optional alternate OCI repository to use for signatures and attestations that match this rule. If specified Repository will override other OCI image repository locations for this Attestor.
+                                                  type: string
+                                              type: object
+                                            type: array
+                                        type: object
+                                      type: array
                                     conditions:
                                       description: Conditions are used to verify attributes within a Predicate. If no Conditions are specified the attestation check is satisfied as long there are predicates that match the predicate type.
                                       items:
@@ -4376,6 +4559,8 @@ spec:
                                     predicateType:
                                       description: PredicateType defines the type of Predicate contained within the Statement.
                                       type: string
+                                  required:
+                                  - predicateType
                                   type: object
                                 type: array
                               attestors:
@@ -5978,6 +6163,95 @@ spec:
                             items:
                               description: Attestation are checks for signed in-toto Statements that are used to verify the image. See https://github.com/in-toto/attestation. Kyverno fetches signed attestations from the OCI registry and decodes them into a list of Statements.
                               properties:
+                                attestors:
+                                  description: Attestors specify the required attestors (i.e. authorities)
+                                  items:
+                                    properties:
+                                      count:
+                                        description: Count specifies the required number of entries that must match. If the count is null, all entries must match (a logical AND). If the count is 1, at least one entry must match (a logical OR). If the count contains a value N, then N must be less than or equal to the size of entries, and at least N entries must match.
+                                        minimum: 1
+                                        type: integer
+                                      entries:
+                                        description: Entries contains the available attestors. An attestor can be a static key, attributes for keyless verification, or a nested attestor declaration.
+                                        items:
+                                          properties:
+                                            annotations:
+                                              additionalProperties:
+                                                type: string
+                                              description: Annotations are used for image verification. Every specified key-value pair must exist and match in the verified payload. The payload may contain other key-value pairs.
+                                              type: object
+                                            attestor:
+                                              description: Attestor is a nested AttestorSet used to specify a more complex set of match authorities
+                                              x-kubernetes-preserve-unknown-fields: true
+                                            certificates:
+                                              description: Certificates specifies one or more certificates
+                                              properties:
+                                                cert:
+                                                  description: Certificate is an optional PEM encoded public certificate.
+                                                  type: string
+                                                certChain:
+                                                  description: CertificateChain is an optional PEM encoded set of certificates used to verify
+                                                  type: string
+                                                rekor:
+                                                  description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                  properties:
+                                                    url:
+                                                      description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                      type: string
+                                                  required:
+                                                  - url
+                                                  type: object
+                                              type: object
+                                            keyless:
+                                              description: Keyless is a set of attribute used to verify a Sigstore keyless attestor. See https://github.com/sigstore/cosign/blob/main/KEYLESS.md.
+                                              properties:
+                                                additionalExtensions:
+                                                  additionalProperties:
+                                                    type: string
+                                                  description: AdditionalExtensions are certificate-extensions used for keyless signing.
+                                                  type: object
+                                                issuer:
+                                                  description: Issuer is the certificate issuer used for keyless signing.
+                                                  type: string
+                                                rekor:
+                                                  description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked and a root certificate chain is expected instead. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                  properties:
+                                                    url:
+                                                      description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                      type: string
+                                                  required:
+                                                  - url
+                                                  type: object
+                                                roots:
+                                                  description: Roots is an optional set of PEM encoded trusted root certificates. If not provided, the system roots are used.
+                                                  type: string
+                                                subject:
+                                                  description: Subject is the verified identity used for keyless signing, for example the email address
+                                                  type: string
+                                              type: object
+                                            keys:
+                                              description: Keys specifies one or more public keys
+                                              properties:
+                                                publicKeys:
+                                                  description: Keys is a set of X.509 public keys used to verify image signatures. The keys can be directly specified or can be a variable reference to a key specified in a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/). When multiple keys are specified each key is processed as a separate staticKey entry (.attestors[*].entries.keys) within the set of attestors and the count is applied across the keys.
+                                                  type: string
+                                                rekor:
+                                                  description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                  properties:
+                                                    url:
+                                                      description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                      type: string
+                                                  required:
+                                                  - url
+                                                  type: object
+                                              type: object
+                                            repository:
+                                              description: Repository is an optional alternate OCI repository to use for signatures and attestations that match this rule. If specified Repository will override other OCI image repository locations for this Attestor.
+                                              type: string
+                                          type: object
+                                        type: array
+                                    type: object
+                                  type: array
                                 conditions:
                                   description: Conditions are used to verify attributes within a Predicate. If no Conditions are specified the attestation check is satisfied as long there are predicates that match the predicate type.
                                   items:
@@ -6054,6 +6328,8 @@ spec:
                                 predicateType:
                                   description: PredicateType defines the type of Predicate contained within the Statement.
                                   type: string
+                              required:
+                              - predicateType
                               type: object
                             type: array
                           attestors:
@@ -7700,6 +7976,95 @@ spec:
                                 items:
                                   description: Attestation are checks for signed in-toto Statements that are used to verify the image. See https://github.com/in-toto/attestation. Kyverno fetches signed attestations from the OCI registry and decodes them into a list of Statements.
                                   properties:
+                                    attestors:
+                                      description: Attestors specify the required attestors (i.e. authorities)
+                                      items:
+                                        properties:
+                                          count:
+                                            description: Count specifies the required number of entries that must match. If the count is null, all entries must match (a logical AND). If the count is 1, at least one entry must match (a logical OR). If the count contains a value N, then N must be less than or equal to the size of entries, and at least N entries must match.
+                                            minimum: 1
+                                            type: integer
+                                          entries:
+                                            description: Entries contains the available attestors. An attestor can be a static key, attributes for keyless verification, or a nested attestor declaration.
+                                            items:
+                                              properties:
+                                                annotations:
+                                                  additionalProperties:
+                                                    type: string
+                                                  description: Annotations are used for image verification. Every specified key-value pair must exist and match in the verified payload. The payload may contain other key-value pairs.
+                                                  type: object
+                                                attestor:
+                                                  description: Attestor is a nested AttestorSet used to specify a more complex set of match authorities
+                                                  x-kubernetes-preserve-unknown-fields: true
+                                                certificates:
+                                                  description: Certificates specifies one or more certificates
+                                                  properties:
+                                                    cert:
+                                                      description: Certificate is an optional PEM encoded public certificate.
+                                                      type: string
+                                                    certChain:
+                                                      description: CertificateChain is an optional PEM encoded set of certificates used to verify
+                                                      type: string
+                                                    rekor:
+                                                      description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                      properties:
+                                                        url:
+                                                          description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                          type: string
+                                                      required:
+                                                      - url
+                                                      type: object
+                                                  type: object
+                                                keyless:
+                                                  description: Keyless is a set of attribute used to verify a Sigstore keyless attestor. See https://github.com/sigstore/cosign/blob/main/KEYLESS.md.
+                                                  properties:
+                                                    additionalExtensions:
+                                                      additionalProperties:
+                                                        type: string
+                                                      description: AdditionalExtensions are certificate-extensions used for keyless signing.
+                                                      type: object
+                                                    issuer:
+                                                      description: Issuer is the certificate issuer used for keyless signing.
+                                                      type: string
+                                                    rekor:
+                                                      description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked and a root certificate chain is expected instead. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                      properties:
+                                                        url:
+                                                          description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                          type: string
+                                                      required:
+                                                      - url
+                                                      type: object
+                                                    roots:
+                                                      description: Roots is an optional set of PEM encoded trusted root certificates. If not provided, the system roots are used.
+                                                      type: string
+                                                    subject:
+                                                      description: Subject is the verified identity used for keyless signing, for example the email address
+                                                      type: string
+                                                  type: object
+                                                keys:
+                                                  description: Keys specifies one or more public keys
+                                                  properties:
+                                                    publicKeys:
+                                                      description: Keys is a set of X.509 public keys used to verify image signatures. The keys can be directly specified or can be a variable reference to a key specified in a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/). When multiple keys are specified each key is processed as a separate staticKey entry (.attestors[*].entries.keys) within the set of attestors and the count is applied across the keys.
+                                                      type: string
+                                                    rekor:
+                                                      description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                      properties:
+                                                        url:
+                                                          description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                          type: string
+                                                      required:
+                                                      - url
+                                                      type: object
+                                                  type: object
+                                                repository:
+                                                  description: Repository is an optional alternate OCI repository to use for signatures and attestations that match this rule. If specified Repository will override other OCI image repository locations for this Attestor.
+                                                  type: string
+                                              type: object
+                                            type: array
+                                        type: object
+                                      type: array
                                     conditions:
                                       description: Conditions are used to verify attributes within a Predicate. If no Conditions are specified the attestation check is satisfied as long there are predicates that match the predicate type.
                                       items:
@@ -7776,6 +8141,8 @@ spec:
                                     predicateType:
                                       description: PredicateType defines the type of Predicate contained within the Statement.
                                       type: string
+                                  required:
+                                  - predicateType
                                   type: object
                                 type: array
                               attestors:
@@ -9990,6 +10357,95 @@ spec:
                             items:
                               description: Attestation are checks for signed in-toto Statements that are used to verify the image. See https://github.com/in-toto/attestation. Kyverno fetches signed attestations from the OCI registry and decodes them into a list of Statements.
                               properties:
+                                attestors:
+                                  description: Attestors specify the required attestors (i.e. authorities)
+                                  items:
+                                    properties:
+                                      count:
+                                        description: Count specifies the required number of entries that must match. If the count is null, all entries must match (a logical AND). If the count is 1, at least one entry must match (a logical OR). If the count contains a value N, then N must be less than or equal to the size of entries, and at least N entries must match.
+                                        minimum: 1
+                                        type: integer
+                                      entries:
+                                        description: Entries contains the available attestors. An attestor can be a static key, attributes for keyless verification, or a nested attestor declaration.
+                                        items:
+                                          properties:
+                                            annotations:
+                                              additionalProperties:
+                                                type: string
+                                              description: Annotations are used for image verification. Every specified key-value pair must exist and match in the verified payload. The payload may contain other key-value pairs.
+                                              type: object
+                                            attestor:
+                                              description: Attestor is a nested AttestorSet used to specify a more complex set of match authorities
+                                              x-kubernetes-preserve-unknown-fields: true
+                                            certificates:
+                                              description: Certificates specifies one or more certificates
+                                              properties:
+                                                cert:
+                                                  description: Certificate is an optional PEM encoded public certificate.
+                                                  type: string
+                                                certChain:
+                                                  description: CertificateChain is an optional PEM encoded set of certificates used to verify
+                                                  type: string
+                                                rekor:
+                                                  description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                  properties:
+                                                    url:
+                                                      description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                      type: string
+                                                  required:
+                                                  - url
+                                                  type: object
+                                              type: object
+                                            keyless:
+                                              description: Keyless is a set of attribute used to verify a Sigstore keyless attestor. See https://github.com/sigstore/cosign/blob/main/KEYLESS.md.
+                                              properties:
+                                                additionalExtensions:
+                                                  additionalProperties:
+                                                    type: string
+                                                  description: AdditionalExtensions are certificate-extensions used for keyless signing.
+                                                  type: object
+                                                issuer:
+                                                  description: Issuer is the certificate issuer used for keyless signing.
+                                                  type: string
+                                                rekor:
+                                                  description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked and a root certificate chain is expected instead. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                  properties:
+                                                    url:
+                                                      description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                      type: string
+                                                  required:
+                                                  - url
+                                                  type: object
+                                                roots:
+                                                  description: Roots is an optional set of PEM encoded trusted root certificates. If not provided, the system roots are used.
+                                                  type: string
+                                                subject:
+                                                  description: Subject is the verified identity used for keyless signing, for example the email address
+                                                  type: string
+                                              type: object
+                                            keys:
+                                              description: Keys specifies one or more public keys
+                                              properties:
+                                                publicKeys:
+                                                  description: Keys is a set of X.509 public keys used to verify image signatures. The keys can be directly specified or can be a variable reference to a key specified in a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/). When multiple keys are specified each key is processed as a separate staticKey entry (.attestors[*].entries.keys) within the set of attestors and the count is applied across the keys.
+                                                  type: string
+                                                rekor:
+                                                  description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                  properties:
+                                                    url:
+                                                      description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                      type: string
+                                                  required:
+                                                  - url
+                                                  type: object
+                                              type: object
+                                            repository:
+                                              description: Repository is an optional alternate OCI repository to use for signatures and attestations that match this rule. If specified Repository will override other OCI image repository locations for this Attestor.
+                                              type: string
+                                          type: object
+                                        type: array
+                                    type: object
+                                  type: array
                                 conditions:
                                   description: Conditions are used to verify attributes within a Predicate. If no Conditions are specified the attestation check is satisfied as long there are predicates that match the predicate type.
                                   items:
@@ -10066,6 +10522,8 @@ spec:
                                 predicateType:
                                   description: PredicateType defines the type of Predicate contained within the Statement.
                                   type: string
+                              required:
+                              - predicateType
                               type: object
                             type: array
                           attestors:
@@ -11727,6 +12185,95 @@ spec:
                                 items:
                                   description: Attestation are checks for signed in-toto Statements that are used to verify the image. See https://github.com/in-toto/attestation. Kyverno fetches signed attestations from the OCI registry and decodes them into a list of Statements.
                                   properties:
+                                    attestors:
+                                      description: Attestors specify the required attestors (i.e. authorities)
+                                      items:
+                                        properties:
+                                          count:
+                                            description: Count specifies the required number of entries that must match. If the count is null, all entries must match (a logical AND). If the count is 1, at least one entry must match (a logical OR). If the count contains a value N, then N must be less than or equal to the size of entries, and at least N entries must match.
+                                            minimum: 1
+                                            type: integer
+                                          entries:
+                                            description: Entries contains the available attestors. An attestor can be a static key, attributes for keyless verification, or a nested attestor declaration.
+                                            items:
+                                              properties:
+                                                annotations:
+                                                  additionalProperties:
+                                                    type: string
+                                                  description: Annotations are used for image verification. Every specified key-value pair must exist and match in the verified payload. The payload may contain other key-value pairs.
+                                                  type: object
+                                                attestor:
+                                                  description: Attestor is a nested AttestorSet used to specify a more complex set of match authorities
+                                                  x-kubernetes-preserve-unknown-fields: true
+                                                certificates:
+                                                  description: Certificates specifies one or more certificates
+                                                  properties:
+                                                    cert:
+                                                      description: Certificate is an optional PEM encoded public certificate.
+                                                      type: string
+                                                    certChain:
+                                                      description: CertificateChain is an optional PEM encoded set of certificates used to verify
+                                                      type: string
+                                                    rekor:
+                                                      description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                      properties:
+                                                        url:
+                                                          description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                          type: string
+                                                      required:
+                                                      - url
+                                                      type: object
+                                                  type: object
+                                                keyless:
+                                                  description: Keyless is a set of attribute used to verify a Sigstore keyless attestor. See https://github.com/sigstore/cosign/blob/main/KEYLESS.md.
+                                                  properties:
+                                                    additionalExtensions:
+                                                      additionalProperties:
+                                                        type: string
+                                                      description: AdditionalExtensions are certificate-extensions used for keyless signing.
+                                                      type: object
+                                                    issuer:
+                                                      description: Issuer is the certificate issuer used for keyless signing.
+                                                      type: string
+                                                    rekor:
+                                                      description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked and a root certificate chain is expected instead. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                      properties:
+                                                        url:
+                                                          description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                          type: string
+                                                      required:
+                                                      - url
+                                                      type: object
+                                                    roots:
+                                                      description: Roots is an optional set of PEM encoded trusted root certificates. If not provided, the system roots are used.
+                                                      type: string
+                                                    subject:
+                                                      description: Subject is the verified identity used for keyless signing, for example the email address
+                                                      type: string
+                                                  type: object
+                                                keys:
+                                                  description: Keys specifies one or more public keys
+                                                  properties:
+                                                    publicKeys:
+                                                      description: Keys is a set of X.509 public keys used to verify image signatures. The keys can be directly specified or can be a variable reference to a key specified in a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/). When multiple keys are specified each key is processed as a separate staticKey entry (.attestors[*].entries.keys) within the set of attestors and the count is applied across the keys.
+                                                      type: string
+                                                    rekor:
+                                                      description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                      properties:
+                                                        url:
+                                                          description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                          type: string
+                                                      required:
+                                                      - url
+                                                      type: object
+                                                  type: object
+                                                repository:
+                                                  description: Repository is an optional alternate OCI repository to use for signatures and attestations that match this rule. If specified Repository will override other OCI image repository locations for this Attestor.
+                                                  type: string
+                                              type: object
+                                            type: array
+                                        type: object
+                                      type: array
                                     conditions:
                                       description: Conditions are used to verify attributes within a Predicate. If no Conditions are specified the attestation check is satisfied as long there are predicates that match the predicate type.
                                       items:
@@ -11803,6 +12350,8 @@ spec:
                                     predicateType:
                                       description: PredicateType defines the type of Predicate contained within the Statement.
                                       type: string
+                                  required:
+                                  - predicateType
                                   type: object
                                 type: array
                               attestors:
@@ -13405,6 +13954,95 @@ spec:
                             items:
                               description: Attestation are checks for signed in-toto Statements that are used to verify the image. See https://github.com/in-toto/attestation. Kyverno fetches signed attestations from the OCI registry and decodes them into a list of Statements.
                               properties:
+                                attestors:
+                                  description: Attestors specify the required attestors (i.e. authorities)
+                                  items:
+                                    properties:
+                                      count:
+                                        description: Count specifies the required number of entries that must match. If the count is null, all entries must match (a logical AND). If the count is 1, at least one entry must match (a logical OR). If the count contains a value N, then N must be less than or equal to the size of entries, and at least N entries must match.
+                                        minimum: 1
+                                        type: integer
+                                      entries:
+                                        description: Entries contains the available attestors. An attestor can be a static key, attributes for keyless verification, or a nested attestor declaration.
+                                        items:
+                                          properties:
+                                            annotations:
+                                              additionalProperties:
+                                                type: string
+                                              description: Annotations are used for image verification. Every specified key-value pair must exist and match in the verified payload. The payload may contain other key-value pairs.
+                                              type: object
+                                            attestor:
+                                              description: Attestor is a nested AttestorSet used to specify a more complex set of match authorities
+                                              x-kubernetes-preserve-unknown-fields: true
+                                            certificates:
+                                              description: Certificates specifies one or more certificates
+                                              properties:
+                                                cert:
+                                                  description: Certificate is an optional PEM encoded public certificate.
+                                                  type: string
+                                                certChain:
+                                                  description: CertificateChain is an optional PEM encoded set of certificates used to verify
+                                                  type: string
+                                                rekor:
+                                                  description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                  properties:
+                                                    url:
+                                                      description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                      type: string
+                                                  required:
+                                                  - url
+                                                  type: object
+                                              type: object
+                                            keyless:
+                                              description: Keyless is a set of attribute used to verify a Sigstore keyless attestor. See https://github.com/sigstore/cosign/blob/main/KEYLESS.md.
+                                              properties:
+                                                additionalExtensions:
+                                                  additionalProperties:
+                                                    type: string
+                                                  description: AdditionalExtensions are certificate-extensions used for keyless signing.
+                                                  type: object
+                                                issuer:
+                                                  description: Issuer is the certificate issuer used for keyless signing.
+                                                  type: string
+                                                rekor:
+                                                  description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked and a root certificate chain is expected instead. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                  properties:
+                                                    url:
+                                                      description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                      type: string
+                                                  required:
+                                                  - url
+                                                  type: object
+                                                roots:
+                                                  description: Roots is an optional set of PEM encoded trusted root certificates. If not provided, the system roots are used.
+                                                  type: string
+                                                subject:
+                                                  description: Subject is the verified identity used for keyless signing, for example the email address
+                                                  type: string
+                                              type: object
+                                            keys:
+                                              description: Keys specifies one or more public keys
+                                              properties:
+                                                publicKeys:
+                                                  description: Keys is a set of X.509 public keys used to verify image signatures. The keys can be directly specified or can be a variable reference to a key specified in a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/). When multiple keys are specified each key is processed as a separate staticKey entry (.attestors[*].entries.keys) within the set of attestors and the count is applied across the keys.
+                                                  type: string
+                                                rekor:
+                                                  description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                  properties:
+                                                    url:
+                                                      description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                      type: string
+                                                  required:
+                                                  - url
+                                                  type: object
+                                              type: object
+                                            repository:
+                                              description: Repository is an optional alternate OCI repository to use for signatures and attestations that match this rule. If specified Repository will override other OCI image repository locations for this Attestor.
+                                              type: string
+                                          type: object
+                                        type: array
+                                    type: object
+                                  type: array
                                 conditions:
                                   description: Conditions are used to verify attributes within a Predicate. If no Conditions are specified the attestation check is satisfied as long there are predicates that match the predicate type.
                                   items:
@@ -13481,6 +14119,8 @@ spec:
                                 predicateType:
                                   description: PredicateType defines the type of Predicate contained within the Statement.
                                   type: string
+                              required:
+                              - predicateType
                               type: object
                             type: array
                           attestors:
@@ -15127,6 +15767,95 @@ spec:
                                 items:
                                   description: Attestation are checks for signed in-toto Statements that are used to verify the image. See https://github.com/in-toto/attestation. Kyverno fetches signed attestations from the OCI registry and decodes them into a list of Statements.
                                   properties:
+                                    attestors:
+                                      description: Attestors specify the required attestors (i.e. authorities)
+                                      items:
+                                        properties:
+                                          count:
+                                            description: Count specifies the required number of entries that must match. If the count is null, all entries must match (a logical AND). If the count is 1, at least one entry must match (a logical OR). If the count contains a value N, then N must be less than or equal to the size of entries, and at least N entries must match.
+                                            minimum: 1
+                                            type: integer
+                                          entries:
+                                            description: Entries contains the available attestors. An attestor can be a static key, attributes for keyless verification, or a nested attestor declaration.
+                                            items:
+                                              properties:
+                                                annotations:
+                                                  additionalProperties:
+                                                    type: string
+                                                  description: Annotations are used for image verification. Every specified key-value pair must exist and match in the verified payload. The payload may contain other key-value pairs.
+                                                  type: object
+                                                attestor:
+                                                  description: Attestor is a nested AttestorSet used to specify a more complex set of match authorities
+                                                  x-kubernetes-preserve-unknown-fields: true
+                                                certificates:
+                                                  description: Certificates specifies one or more certificates
+                                                  properties:
+                                                    cert:
+                                                      description: Certificate is an optional PEM encoded public certificate.
+                                                      type: string
+                                                    certChain:
+                                                      description: CertificateChain is an optional PEM encoded set of certificates used to verify
+                                                      type: string
+                                                    rekor:
+                                                      description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                      properties:
+                                                        url:
+                                                          description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                          type: string
+                                                      required:
+                                                      - url
+                                                      type: object
+                                                  type: object
+                                                keyless:
+                                                  description: Keyless is a set of attribute used to verify a Sigstore keyless attestor. See https://github.com/sigstore/cosign/blob/main/KEYLESS.md.
+                                                  properties:
+                                                    additionalExtensions:
+                                                      additionalProperties:
+                                                        type: string
+                                                      description: AdditionalExtensions are certificate-extensions used for keyless signing.
+                                                      type: object
+                                                    issuer:
+                                                      description: Issuer is the certificate issuer used for keyless signing.
+                                                      type: string
+                                                    rekor:
+                                                      description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked and a root certificate chain is expected instead. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                      properties:
+                                                        url:
+                                                          description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                          type: string
+                                                      required:
+                                                      - url
+                                                      type: object
+                                                    roots:
+                                                      description: Roots is an optional set of PEM encoded trusted root certificates. If not provided, the system roots are used.
+                                                      type: string
+                                                    subject:
+                                                      description: Subject is the verified identity used for keyless signing, for example the email address
+                                                      type: string
+                                                  type: object
+                                                keys:
+                                                  description: Keys specifies one or more public keys
+                                                  properties:
+                                                    publicKeys:
+                                                      description: Keys is a set of X.509 public keys used to verify image signatures. The keys can be directly specified or can be a variable reference to a key specified in a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/). When multiple keys are specified each key is processed as a separate staticKey entry (.attestors[*].entries.keys) within the set of attestors and the count is applied across the keys.
+                                                      type: string
+                                                    rekor:
+                                                      description: Rekor provides configuration for the Rekor transparency log service. If the value is nil, Rekor is not checked. If an empty object is provided the public instance of Rekor (https://rekor.sigstore.dev) is used.
+                                                      properties:
+                                                        url:
+                                                          description: URL is the address of the transparency log. Defaults to the public log https://rekor.sigstore.dev.
+                                                          type: string
+                                                      required:
+                                                      - url
+                                                      type: object
+                                                  type: object
+                                                repository:
+                                                  description: Repository is an optional alternate OCI repository to use for signatures and attestations that match this rule. If specified Repository will override other OCI image repository locations for this Attestor.
+                                                  type: string
+                                              type: object
+                                            type: array
+                                        type: object
+                                      type: array
                                     conditions:
                                       description: Conditions are used to verify attributes within a Predicate. If no Conditions are specified the attestation check is satisfied as long there are predicates that match the predicate type.
                                       items:
@@ -15203,6 +15932,8 @@ spec:
                                     predicateType:
                                       description: PredicateType defines the type of Predicate contained within the Statement.
                                       type: string
+                                  required:
+                                  - predicateType
                                   type: object
                                 type: array
                               attestors:
@@ -15686,7 +16417,6 @@ spec:
   names:
     categories:
     - kyverno
-    - all
     kind: UpdateRequest
     listKind: UpdateRequestList
     plural: updaterequests

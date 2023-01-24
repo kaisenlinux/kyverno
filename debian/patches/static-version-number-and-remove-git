@@ -1,7 +1,7 @@
 Author: Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>
 
---- kyverno-1.8.2.orig/Makefile
-+++ kyverno-1.8.2/Makefile
+--- kyverno-1.8.5.orig/Makefile
++++ kyverno-1.8.5/Makefile
 @@ -4,12 +4,12 @@
  # DEFAULTS #
  ############
@@ -16,7 +16,7 @@ Author: Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>
 +#GIT_HASH             := $(GIT_BRANCH)/$(shell git log -1 --pretty=format:"%H")
  TIMESTAMP            := $(shell date '+%Y-%m-%d_%I:%M:%S%p')
 -VERSION              ?= $(shell git describe --match "v[0-9]*")
-+VERSION              ?= 1.8.2
++VERSION              ?= 1.8.5
  REGISTRY             ?= ghcr.io
  REPO                 ?= kyverno
  IMAGE_TAG_LATEST_DEV  = $(shell git describe --match "[0-9].[0-9]-dev*" | cut -d '-' -f-2)
@@ -27,7 +27,7 @@ Author: Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>
 -CGO_ENABLED    ?= 0 
 -LD_FLAGS        = "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=$(GIT_VERSION) -X $(PACKAGE)/pkg/version.BuildHash=$(GIT_HASH) -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
 +CGO_ENABLED    ?= 0
-+LD_FLAGS        = "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=1.8.2 -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
++LD_FLAGS        = "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=1.8.5 -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
  LD_FLAGS_DEV    = "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=$(GIT_VERSION_DEV) -X $(PACKAGE)/pkg/version.BuildHash=$(GIT_HASH) -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
  
  .PHONY: fmt

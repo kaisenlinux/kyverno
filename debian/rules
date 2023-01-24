@@ -3,10 +3,10 @@
 export GOPATH=$(CURDIR)/_build
 
 %:
-	dh $@ --buildsystem=golang
+	dh $@ --buildsystem=golang --builddirectory=$(CURDIR)/_build
 
 override_dh_auto_clean:
-	rm -rf $(CURDIR)/_build/ $(CURDIR)/obj-x86_64-linux-gnu/
+	rm -rf $(CURDIR)/_build/ $(CURDIR)/cmd/cli/kubectl-kyverno/kubectl-kyverno
 
 override_dh_auto_build:
 	make build-all
@@ -15,7 +15,10 @@ override_dh_auto_test:
 
 override_dh_auto_install:
 	dh_auto_install -- --no-source
-	mkdir -p $(CURDIR)/debian/kyverno/usr/share/bash-completion/completions $(CURDIR)/debian/kyverno/usr/share/zsh/vendor-completions $(CURDIR)/debian/kyverno/usr/bin
 	$(CURDIR)/cmd/cli/kubectl-kyverno/kubectl-kyverno completion bash > $(CURDIR)/debian/kyverno/usr/share/bash-completion/completions/kyverno
 	$(CURDIR)/cmd/cli/kubectl-kyverno/kubectl-kyverno completion zsh > $(CURDIR)/debian/kyverno/usr/share/zsh/vendor-completions/_kyverno
-	mv $(CURDIR)/cmd/cli/kubectl-kyverno/kubectl-kyverno $(CURDIR)/debian/kyverno/usr/bin/kyverno
+	install -p -m 0755 $(CURDIR)/cmd/cli/kubectl-kyverno/kubectl-kyverno $(CURDIR)/debian/kyverno/usr/bin/kyverno
+	install -p -m 0644 $(CURDIR)/debian/kyverno.png $(CURDIR)/debian/kyverno/usr/share/pixmaps/
+
+override_dh_installdocs:
+	dh_installdocs --all $(CURDIR)/*.md $(CURDIR)/CODEOWNERS $(CURDIR)/LICENSE

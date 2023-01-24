@@ -61,6 +61,7 @@ import (
 	metadataclient "k8s.io/client-go/metadata"
 	metadatainformers "k8s.io/client-go/metadata/metadatainformer"
 	"k8s.io/client-go/rest"
+	kyamlopenapi "sigs.k8s.io/kustomize/kyaml/openapi"
 )
 
 const (
@@ -377,8 +378,9 @@ func createReportControllers(
 	metadataFactory metadatainformers.SharedInformerFactory,
 	kubeInformer kubeinformers.SharedInformerFactory,
 	kyvernoInformer kyvernoinformer.SharedInformerFactory,
-) []controller {
+) ([]controller, func(context.Context) error) {
 	var ctrls []controller
+	var warmups []func(context.Context) error
 	kyvernoV1 := kyvernoInformer.Kyverno().V1()
 	if backgroundScan || admissionReports {
 		resourceReportController := resourcereportcontroller.NewController(
@@ -386,6 +388,9 @@ func createReportControllers(
 			kyvernoV1.Policies(),
 			kyvernoV1.ClusterPolicies(),
 		)
+		warmups = append(warmups, func(ctx context.Context) error {
+			return resourceReportController.Warmup(ctx)
+		})
 		ctrls = append(ctrls, newController(
 			resourcereportcontroller.ControllerName,
 			resourceReportController,
@@ -430,7 +435,14 @@ func createReportControllers(
 			))
 		}
 	}
-	return ctrls
+	return ctrls, func(ctx context.Context) error {
+		for _, warmup := range warmups {
+			if err := warmup(ctx); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 }
 
 func createrLeaderControllers(
@@ -446,7 +458,7 @@ func createrLeaderControllers(
 	eventGenerator event.Interface,
 	certRenewer tls.CertRenewer,
 	runtime runtimeutils.Runtime,
-) ([]controller, error) {
+) ([]controller, func(context.Context) error, error) {
 	policyCtrl, err := policy.NewPolicyController(
 		kyvernoClient,
 		dynamicClient,
@@ -461,7 +473,7 @@ func createrLeaderControllers(
 		metricsConfig,
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	certManager := certmanager.NewController(
 		kubeKyvernoInformer.Core().V1().Secrets(),
@@ -499,22 +511,24 @@ func createrLeaderControllers(
 		admissionReports,
 		runtime,
 	)
+	reportControllers, warmup := createReportControllers(
+		backgroundScan,
+		admissionReports,
+		dynamicClient,
+		kyvernoClient,
+		metadataInformer,
+		kubeInformer,
+		kyvernoInformer,
+	)
 	return append(
 			[]controller{
 				newController("policy-controller", policyCtrl, 2),
 				newController(certmanager.ControllerName, certManager, certmanager.Workers),
 				newController(webhookcontroller.ControllerName, webhookController, webhookcontroller.Workers),
 			},
-			createReportControllers(
-				backgroundScan,
-				admissionReports,
-				dynamicClient,
-				kyvernoClient,
-				metadataInformer,
-				kubeInformer,
-				kyvernoInformer,
-			)...,
+			reportControllers...,
 		),
+		warmup,
 		nil
 }
 
@@ -577,6 +591,9 @@ func main() {
 	}
 	// setup cosign
 	setupCosign(logger)
+	// THIS IS AN UGLY FIX
+	// ELSE KYAML IS NOT THREAD SAFE
+	kyamlopenapi.Schema()
 	// setup signals
 	signalCtx, signalCancel := setupSignals()
 	defer signalCancel()
@@ -687,7 +704,7 @@ func main() {
 			kyvernoInformer := kyvernoinformer.NewSharedInformerFactory(kyvernoClient, resyncPeriod)
 			metadataInformer := metadatainformers.NewSharedInformerFactory(metadataClient, 15*time.Minute)
 			// create leader controllers
-			leaderControllers, err := createrLeaderControllers(
+			leaderControllers, warmup, err := createrLeaderControllers(
 				kubeInformer,
 				kubeKyvernoInformer,
 				kyvernoInformer,
@@ -714,6 +731,10 @@ func main() {
 			if !checkCacheSync(metadataInformer.WaitForCacheSync(signalCtx.Done())) {
 				// TODO: shall we just exit ?
 				logger.Error(errors.New("failed to wait for cache sync"), "failed to wait for cache sync")
+			}
+			if err := warmup(ctx); err != nil {
+				logger.Error(err, "failed to run warmup")
+				os.Exit(1)
 			}
 			// start leader controllers
 			var wg sync.WaitGroup
