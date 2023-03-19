@@ -36,6 +36,7 @@ const (
 	ControllerName = "aggregate-report-controller"
 	maxRetries     = 10
 	mergeLimit     = 1000
+	enqueueDelay   = 30 * time.Second
 )
 
 type controller struct {
@@ -61,7 +62,7 @@ type controller struct {
 
 type policyMapEntry struct {
 	policy kyvernov1.PolicyInterface
-	rules  sets.String
+	rules  sets.Set[string]
 }
 
 func keyFunc(obj metav1.Object) cache.ExplicitKey {
@@ -94,15 +95,14 @@ func NewController(
 		metadataCache:  metadataCache,
 		chunkSize:      chunkSize,
 	}
-	delay := 15 * time.Second
-	controllerutils.AddDelayedExplicitEventHandlers(logger, polrInformer.Informer(), c.queue, delay, keyFunc)
-	controllerutils.AddDelayedExplicitEventHandlers(logger, cpolrInformer.Informer(), c.queue, delay, keyFunc)
-	controllerutils.AddDelayedExplicitEventHandlers(logger, bgscanrInformer.Informer(), c.queue, delay, keyFunc)
-	controllerutils.AddDelayedExplicitEventHandlers(logger, cbgscanrInformer.Informer(), c.queue, delay, keyFunc)
+	controllerutils.AddDelayedExplicitEventHandlers(logger, polrInformer.Informer(), c.queue, enqueueDelay, keyFunc)
+	controllerutils.AddDelayedExplicitEventHandlers(logger, cpolrInformer.Informer(), c.queue, enqueueDelay, keyFunc)
+	controllerutils.AddDelayedExplicitEventHandlers(logger, bgscanrInformer.Informer(), c.queue, enqueueDelay, keyFunc)
+	controllerutils.AddDelayedExplicitEventHandlers(logger, cbgscanrInformer.Informer(), c.queue, enqueueDelay, keyFunc)
 	enqueueFromAdmr := func(obj metav1.Object) {
 		// no need to consider non aggregated reports
 		if controllerutils.HasLabel(obj, reportutils.LabelAggregatedReport) {
-			c.queue.AddAfter(keyFunc(obj), delay)
+			c.queue.AddAfter(keyFunc(obj), enqueueDelay)
 		}
 	}
 	controllerutils.AddEventHandlersT(
@@ -236,7 +236,7 @@ func (c *controller) reconcileReport(ctx context.Context, policyMap map[string]p
 }
 
 func (c *controller) cleanReports(ctx context.Context, actual map[string]kyvernov1alpha2.ReportInterface, expected []kyvernov1alpha2.ReportInterface) error {
-	keep := sets.NewString()
+	keep := sets.New[string]()
 	for _, obj := range expected {
 		keep.Insert(obj.GetName())
 	}
@@ -291,7 +291,7 @@ func (c *controller) createPolicyMap() (map[string]policyMapEntry, error) {
 		}
 		results[key] = policyMapEntry{
 			policy: cpol,
-			rules:  sets.NewString(),
+			rules:  sets.New[string](),
 		}
 		for _, rule := range autogen.ComputeRules(cpol) {
 			results[key].rules.Insert(rule.Name)
@@ -308,7 +308,7 @@ func (c *controller) createPolicyMap() (map[string]policyMapEntry, error) {
 		}
 		results[key] = policyMapEntry{
 			policy: pol,
-			rules:  sets.NewString(),
+			rules:  sets.New[string](),
 		}
 		for _, rule := range autogen.ComputeRules(pol) {
 			results[key].rules.Insert(rule.Name)
@@ -344,7 +344,7 @@ func (c *controller) getPolicyReports(ctx context.Context, namespace string) ([]
 			return nil, err
 		}
 		for i := range list.Items {
-			if controllerutils.CheckLabel(&list.Items[i], kyvernov1.LabelAppManagedBy, kyvernov1.ValueKyvernoApp) {
+			if controllerutils.IsManagedByKyverno(&list.Items[i]) {
 				reports = append(reports, &list.Items[i])
 			}
 		}
@@ -354,7 +354,7 @@ func (c *controller) getPolicyReports(ctx context.Context, namespace string) ([]
 			return nil, err
 		}
 		for i := range list.Items {
-			if controllerutils.CheckLabel(&list.Items[i], kyvernov1.LabelAppManagedBy, kyvernov1.ValueKyvernoApp) {
+			if controllerutils.IsManagedByKyverno(&list.Items[i]) {
 				reports = append(reports, &list.Items[i])
 			}
 		}

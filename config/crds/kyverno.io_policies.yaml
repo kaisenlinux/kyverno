@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.10.0
+    controller-gen.kubebuilder.io/version: v0.11.1
   creationTimestamp: null
   name: policies.kyverno.io
 spec:
@@ -11,7 +11,6 @@ spec:
   names:
     categories:
     - kyverno
-    - all
     kind: Policy
     listKind: PolicyList
     plural: policies
@@ -34,6 +33,25 @@ spec:
     - jsonPath: .status.ready
       name: Ready
       type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .status.rulecount.validate
+      name: Validate
+      priority: 1
+      type: integer
+    - jsonPath: .status.rulecount.mutate
+      name: Mutate
+      priority: 1
+      type: integer
+    - jsonPath: .status.rulecount.generate
+      name: Generate
+      priority: 1
+      type: integer
+    - jsonPath: .status.rulecount.verifyimages
+      name: Verifyimages
+      priority: 1
+      type: integer
     name: v1
     schema:
       openAPIV3Schema:
@@ -77,8 +95,9 @@ spec:
               failurePolicy:
                 description: FailurePolicy defines how unexpected policy errors and
                   webhook response timeout errors are handled. Rules within the same
-                  policy share the same failure behavior. Allowed values are Ignore
-                  or Fail. Defaults to Fail.
+                  policy share the same failure behavior. This field should not be
+                  accessed directly, instead `GetFailurePolicy()` should be used.
+                  Allowed values are Ignore or Fail. Defaults to Fail.
                 enum:
                 - Ignore
                 - Fail
@@ -1711,6 +1730,9 @@ spec:
                                       type: object
                                   type: object
                                 type: array
+                              foreach:
+                                description: Foreach declares a nested foreach iterator
+                                x-kubernetes-preserve-unknown-fields: true
                               list:
                                 description: List specifies a JMESPath expression
                                   that results in one or more elements to which the
@@ -2024,6 +2046,9 @@ spec:
                                   scope within the foreach block to allow referencing
                                   other elements in the subtree.
                                 type: boolean
+                              foreach:
+                                description: Foreach declares a nested foreach iterator
+                                x-kubernetes-preserve-unknown-fields: true
                               list:
                                 description: List specifies a JMESPath expression
                                   that results in one or more elements to which the
@@ -2266,13 +2291,24 @@ spec:
                                           description: Keys specifies one or more
                                             public keys
                                           properties:
+                                            kms:
+                                              description: 'KMS provides the URI to
+                                                the public key stored in a Key Management
+                                                System. See: https://github.com/sigstore/cosign/blob/main/KMS.md'
+                                              type: string
                                             publicKeys:
                                               description: Keys is a set of X.509
                                                 public keys used to verify image signatures.
                                                 The keys can be directly specified
                                                 or can be a variable reference to
                                                 a key specified in a ConfigMap (see
-                                                https://kyverno.io/docs/writing-policies/variables/).
+                                                https://kyverno.io/docs/writing-policies/variables/),
+                                                or reference a standard Kubernetes
+                                                Secret elsewhere in the cluster by
+                                                specifying it in the format "k8s://<namespace>/<secret_name>".
+                                                The named Secret must specify a key
+                                                `cosign.pub` containing the public
+                                                key used for verification, (see https://github.com/sigstore/cosign/blob/main/KMS.md#kubernetes-secret).
                                                 When multiple keys are specified each
                                                 key is processed as a separate staticKey
                                                 entry (.attestors[*].entries.keys)
@@ -2295,6 +2331,29 @@ spec:
                                               required:
                                               - url
                                               type: object
+                                            secret:
+                                              description: Reference to a Secret resource
+                                                that contains a public key
+                                              properties:
+                                                name:
+                                                  description: Name of the secret.
+                                                    The provided secret must contain
+                                                    a key named cosign.pub.
+                                                  type: string
+                                                namespace:
+                                                  description: Namespace name where
+                                                    the Secret exists.
+                                                  type: string
+                                              required:
+                                              - name
+                                              - namespace
+                                              type: object
+                                            signatureAlgorithm:
+                                              default: sha256
+                                              description: Specify signature algorithm
+                                                for public keys. Supported values
+                                                are sha256 and sha512
+                                              type: string
                                           type: object
                                         repository:
                                           description: Repository is an optional alternate
@@ -2584,13 +2643,26 @@ spec:
                                               description: Keys specifies one or more
                                                 public keys
                                               properties:
+                                                kms:
+                                                  description: 'KMS provides the URI
+                                                    to the public key stored in a
+                                                    Key Management System. See: https://github.com/sigstore/cosign/blob/main/KMS.md'
+                                                  type: string
                                                 publicKeys:
                                                   description: Keys is a set of X.509
                                                     public keys used to verify image
                                                     signatures. The keys can be directly
                                                     specified or can be a variable
                                                     reference to a key specified in
-                                                    a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/).
+                                                    a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/),
+                                                    or reference a standard Kubernetes
+                                                    Secret elsewhere in the cluster
+                                                    by specifying it in the format
+                                                    "k8s://<namespace>/<secret_name>".
+                                                    The named Secret must specify
+                                                    a key `cosign.pub` containing
+                                                    the public key used for verification,
+                                                    (see https://github.com/sigstore/cosign/blob/main/KMS.md#kubernetes-secret).
                                                     When multiple keys are specified
                                                     each key is processed as a separate
                                                     staticKey entry (.attestors[*].entries.keys)
@@ -2615,6 +2687,30 @@ spec:
                                                   required:
                                                   - url
                                                   type: object
+                                                secret:
+                                                  description: Reference to a Secret
+                                                    resource that contains a public
+                                                    key
+                                                  properties:
+                                                    name:
+                                                      description: Name of the secret.
+                                                        The provided secret must contain
+                                                        a key named cosign.pub.
+                                                      type: string
+                                                    namespace:
+                                                      description: Namespace name
+                                                        where the Secret exists.
+                                                      type: string
+                                                  required:
+                                                  - name
+                                                  - namespace
+                                                  type: object
+                                                signatureAlgorithm:
+                                                  default: sha256
+                                                  description: Specify signature algorithm
+                                                    for public keys. Supported values
+                                                    are sha256 and sha512
+                                                  type: string
                                               type: object
                                             repository:
                                               description: Repository is an optional
@@ -2867,12 +2963,23 @@ spec:
                                         description: Keys specifies one or more public
                                           keys
                                         properties:
+                                          kms:
+                                            description: 'KMS provides the URI to
+                                              the public key stored in a Key Management
+                                              System. See: https://github.com/sigstore/cosign/blob/main/KMS.md'
+                                            type: string
                                           publicKeys:
                                             description: Keys is a set of X.509 public
                                               keys used to verify image signatures.
                                               The keys can be directly specified or
                                               can be a variable reference to a key
-                                              specified in a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/).
+                                              specified in a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/),
+                                              or reference a standard Kubernetes Secret
+                                              elsewhere in the cluster by specifying
+                                              it in the format "k8s://<namespace>/<secret_name>".
+                                              The named Secret must specify a key
+                                              `cosign.pub` containing the public key
+                                              used for verification, (see https://github.com/sigstore/cosign/blob/main/KMS.md#kubernetes-secret).
                                               When multiple keys are specified each
                                               key is processed as a separate staticKey
                                               entry (.attestors[*].entries.keys) within
@@ -2895,6 +3002,29 @@ spec:
                                             required:
                                             - url
                                             type: object
+                                          secret:
+                                            description: Reference to a Secret resource
+                                              that contains a public key
+                                            properties:
+                                              name:
+                                                description: Name of the secret. The
+                                                  provided secret must contain a key
+                                                  named cosign.pub.
+                                                type: string
+                                              namespace:
+                                                description: Namespace name where
+                                                  the Secret exists.
+                                                type: string
+                                            required:
+                                            - name
+                                            - namespace
+                                            type: object
+                                          signatureAlgorithm:
+                                            default: sha256
+                                            description: Specify signature algorithm
+                                              for public keys. Supported values are
+                                              sha256 and sha512
+                                            type: string
                                         type: object
                                       repository:
                                         description: Repository is an optional alternate
@@ -2977,15 +3107,17 @@ spec:
                   to "true", it must be set to "false" to disable the validation checks.
                 type: boolean
               validationFailureAction:
-                default: audit
+                default: Audit
                 description: ValidationFailureAction defines if a validation policy
                   rule violation should block the admission review request (enforce),
                   or allow (audit) the admission review request and report an error
                   in a policy report. Optional. Allowed values are audit or enforce.
-                  The default value is "audit".
+                  The default value is "Audit".
                 enum:
                 - audit
                 - enforce
+                - Audit
+                - Enforce
                 type: string
               validationFailureActionOverrides:
                 description: ValidationFailureActionOverrides is a Cluster Policy
@@ -2999,6 +3131,8 @@ spec:
                       enum:
                       - audit
                       - enforce
+                      - Audit
+                      - Enforce
                       type: string
                     namespaces:
                       items:
@@ -4713,6 +4847,10 @@ spec:
                                           type: object
                                       type: object
                                     type: array
+                                  foreach:
+                                    description: Foreach declares a nested foreach
+                                      iterator
+                                    x-kubernetes-preserve-unknown-fields: true
                                   list:
                                     description: List specifies a JMESPath expression
                                       that results in one or more elements to which
@@ -5038,6 +5176,10 @@ spec:
                                       as the validation scope within the foreach block
                                       to allow referencing other elements in the subtree.
                                     type: boolean
+                                  foreach:
+                                    description: Foreach declares a nested foreach
+                                      iterator
+                                    x-kubernetes-preserve-unknown-fields: true
                                   list:
                                     description: List specifies a JMESPath expression
                                       that results in one or more elements to which
@@ -5287,13 +5429,26 @@ spec:
                                               description: Keys specifies one or more
                                                 public keys
                                               properties:
+                                                kms:
+                                                  description: 'KMS provides the URI
+                                                    to the public key stored in a
+                                                    Key Management System. See: https://github.com/sigstore/cosign/blob/main/KMS.md'
+                                                  type: string
                                                 publicKeys:
                                                   description: Keys is a set of X.509
                                                     public keys used to verify image
                                                     signatures. The keys can be directly
                                                     specified or can be a variable
                                                     reference to a key specified in
-                                                    a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/).
+                                                    a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/),
+                                                    or reference a standard Kubernetes
+                                                    Secret elsewhere in the cluster
+                                                    by specifying it in the format
+                                                    "k8s://<namespace>/<secret_name>".
+                                                    The named Secret must specify
+                                                    a key `cosign.pub` containing
+                                                    the public key used for verification,
+                                                    (see https://github.com/sigstore/cosign/blob/main/KMS.md#kubernetes-secret).
                                                     When multiple keys are specified
                                                     each key is processed as a separate
                                                     staticKey entry (.attestors[*].entries.keys)
@@ -5318,6 +5473,30 @@ spec:
                                                   required:
                                                   - url
                                                   type: object
+                                                secret:
+                                                  description: Reference to a Secret
+                                                    resource that contains a public
+                                                    key
+                                                  properties:
+                                                    name:
+                                                      description: Name of the secret.
+                                                        The provided secret must contain
+                                                        a key named cosign.pub.
+                                                      type: string
+                                                    namespace:
+                                                      description: Namespace name
+                                                        where the Secret exists.
+                                                      type: string
+                                                  required:
+                                                  - name
+                                                  - namespace
+                                                  type: object
+                                                signatureAlgorithm:
+                                                  default: sha256
+                                                  description: Specify signature algorithm
+                                                    for public keys. Supported values
+                                                    are sha256 and sha512
+                                                  type: string
                                               type: object
                                             repository:
                                               description: Repository is an optional
@@ -5621,6 +5800,12 @@ spec:
                                                   description: Keys specifies one
                                                     or more public keys
                                                   properties:
+                                                    kms:
+                                                      description: 'KMS provides the
+                                                        URI to the public key stored
+                                                        in a Key Management System.
+                                                        See: https://github.com/sigstore/cosign/blob/main/KMS.md'
+                                                      type: string
                                                     publicKeys:
                                                       description: Keys is a set of
                                                         X.509 public keys used to
@@ -5628,7 +5813,15 @@ spec:
                                                         keys can be directly specified
                                                         or can be a variable reference
                                                         to a key specified in a ConfigMap
-                                                        (see https://kyverno.io/docs/writing-policies/variables/).
+                                                        (see https://kyverno.io/docs/writing-policies/variables/),
+                                                        or reference a standard Kubernetes
+                                                        Secret elsewhere in the cluster
+                                                        by specifying it in the format
+                                                        "k8s://<namespace>/<secret_name>".
+                                                        The named Secret must specify
+                                                        a key `cosign.pub` containing
+                                                        the public key used for verification,
+                                                        (see https://github.com/sigstore/cosign/blob/main/KMS.md#kubernetes-secret).
                                                         When multiple keys are specified
                                                         each key is processed as a
                                                         separate staticKey entry (.attestors[*].entries.keys)
@@ -5655,6 +5848,32 @@ spec:
                                                       required:
                                                       - url
                                                       type: object
+                                                    secret:
+                                                      description: Reference to a
+                                                        Secret resource that contains
+                                                        a public key
+                                                      properties:
+                                                        name:
+                                                          description: Name of the
+                                                            secret. The provided secret
+                                                            must contain a key named
+                                                            cosign.pub.
+                                                          type: string
+                                                        namespace:
+                                                          description: Namespace name
+                                                            where the Secret exists.
+                                                          type: string
+                                                      required:
+                                                      - name
+                                                      - namespace
+                                                      type: object
+                                                    signatureAlgorithm:
+                                                      default: sha256
+                                                      description: Specify signature
+                                                        algorithm for public keys.
+                                                        Supported values are sha256
+                                                        and sha512
+                                                      type: string
                                                   type: object
                                                 repository:
                                                   description: Repository is an optional
@@ -5914,13 +6133,25 @@ spec:
                                             description: Keys specifies one or more
                                               public keys
                                             properties:
+                                              kms:
+                                                description: 'KMS provides the URI
+                                                  to the public key stored in a Key
+                                                  Management System. See: https://github.com/sigstore/cosign/blob/main/KMS.md'
+                                                type: string
                                               publicKeys:
                                                 description: Keys is a set of X.509
                                                   public keys used to verify image
                                                   signatures. The keys can be directly
                                                   specified or can be a variable reference
                                                   to a key specified in a ConfigMap
-                                                  (see https://kyverno.io/docs/writing-policies/variables/).
+                                                  (see https://kyverno.io/docs/writing-policies/variables/),
+                                                  or reference a standard Kubernetes
+                                                  Secret elsewhere in the cluster
+                                                  by specifying it in the format "k8s://<namespace>/<secret_name>".
+                                                  The named Secret must specify a
+                                                  key `cosign.pub` containing the
+                                                  public key used for verification,
+                                                  (see https://github.com/sigstore/cosign/blob/main/KMS.md#kubernetes-secret).
                                                   When multiple keys are specified
                                                   each key is processed as a separate
                                                   staticKey entry (.attestors[*].entries.keys)
@@ -5944,6 +6175,30 @@ spec:
                                                 required:
                                                 - url
                                                 type: object
+                                              secret:
+                                                description: Reference to a Secret
+                                                  resource that contains a public
+                                                  key
+                                                properties:
+                                                  name:
+                                                    description: Name of the secret.
+                                                      The provided secret must contain
+                                                      a key named cosign.pub.
+                                                    type: string
+                                                  namespace:
+                                                    description: Namespace name where
+                                                      the Secret exists.
+                                                    type: string
+                                                required:
+                                                - name
+                                                - namespace
+                                                type: object
+                                              signatureAlgorithm:
+                                                default: sha256
+                                                description: Specify signature algorithm
+                                                  for public keys. Supported values
+                                                  are sha256 and sha512
+                                                type: string
                                             type: object
                                           repository:
                                             description: Repository is an optional
@@ -6097,6 +6352,27 @@ spec:
                 description: Ready indicates if the policy is ready to serve the admission
                   request. Deprecated in favor of Conditions
                 type: boolean
+              rulecount:
+                description: RuleCount describes total number of rules in a policy
+                properties:
+                  generate:
+                    description: Count for generate rules in policy
+                    type: integer
+                  mutate:
+                    description: Count for mutate rules in policy
+                    type: integer
+                  validate:
+                    description: Count for validate rules in policy
+                    type: integer
+                  verifyimages:
+                    description: Count for verify image rules in policy
+                    type: integer
+                required:
+                - generate
+                - mutate
+                - validate
+                - verifyimages
+                type: object
             required:
             - ready
             type: object
@@ -6121,6 +6397,25 @@ spec:
     - jsonPath: .status.ready
       name: Ready
       type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .status.rulecount.validate
+      name: Validate
+      priority: 1
+      type: integer
+    - jsonPath: .status.rulecount.mutate
+      name: Mutate
+      priority: 1
+      type: integer
+    - jsonPath: .status.rulecount.generate
+      name: Generate
+      priority: 1
+      type: integer
+    - jsonPath: .status.rulecount.verifyimages
+      name: Verifyimages
+      priority: 1
+      type: integer
     name: v2beta1
     schema:
       openAPIV3Schema:
@@ -7402,6 +7697,9 @@ spec:
                                       type: object
                                   type: object
                                 type: array
+                              foreach:
+                                description: Foreach declares a nested foreach iterator
+                                x-kubernetes-preserve-unknown-fields: true
                               list:
                                 description: List specifies a JMESPath expression
                                   that results in one or more elements to which the
@@ -7572,7 +7870,7 @@ spec:
                             rule execution. This is useful for finer control of when
                             an rule is applied. A condition can reference object data
                             using JMESPath notation. Here, all of the conditions need
-                            to pass
+                            to pass.
                           items:
                             properties:
                               key:
@@ -7613,7 +7911,7 @@ spec:
                             rule execution. This is useful for finer control of when
                             an rule is applied. A condition can reference object data
                             using JMESPath notation. Here, at least one of the conditions
-                            need to pass
+                            need to pass.
                           items:
                             properties:
                               key:
@@ -7673,7 +7971,7 @@ spec:
                                     conditional rule execution. This is useful for
                                     finer control of when an rule is applied. A condition
                                     can reference object data using JMESPath notation.
-                                    Here, all of the conditions need to pass
+                                    Here, all of the conditions need to pass.
                                   items:
                                     properties:
                                       key:
@@ -7716,7 +8014,7 @@ spec:
                                     conditional rule execution. This is useful for
                                     finer control of when an rule is applied. A condition
                                     can reference object data using JMESPath notation.
-                                    Here, at least one of the conditions need to pass
+                                    Here, at least one of the conditions need to pass.
                                   items:
                                     properties:
                                       key:
@@ -7883,6 +8181,9 @@ spec:
                                   scope within the foreach block to allow referencing
                                   other elements in the subtree.
                                 type: boolean
+                              foreach:
+                                description: Foreach declares a nested foreach iterator
+                                x-kubernetes-preserve-unknown-fields: true
                               list:
                                 description: List specifies a JMESPath expression
                                   that results in one or more elements to which the
@@ -8125,13 +8426,24 @@ spec:
                                           description: Keys specifies one or more
                                             public keys
                                           properties:
+                                            kms:
+                                              description: 'KMS provides the URI to
+                                                the public key stored in a Key Management
+                                                System. See: https://github.com/sigstore/cosign/blob/main/KMS.md'
+                                              type: string
                                             publicKeys:
                                               description: Keys is a set of X.509
                                                 public keys used to verify image signatures.
                                                 The keys can be directly specified
                                                 or can be a variable reference to
                                                 a key specified in a ConfigMap (see
-                                                https://kyverno.io/docs/writing-policies/variables/).
+                                                https://kyverno.io/docs/writing-policies/variables/),
+                                                or reference a standard Kubernetes
+                                                Secret elsewhere in the cluster by
+                                                specifying it in the format "k8s://<namespace>/<secret_name>".
+                                                The named Secret must specify a key
+                                                `cosign.pub` containing the public
+                                                key used for verification, (see https://github.com/sigstore/cosign/blob/main/KMS.md#kubernetes-secret).
                                                 When multiple keys are specified each
                                                 key is processed as a separate staticKey
                                                 entry (.attestors[*].entries.keys)
@@ -8154,6 +8466,29 @@ spec:
                                               required:
                                               - url
                                               type: object
+                                            secret:
+                                              description: Reference to a Secret resource
+                                                that contains a public key
+                                              properties:
+                                                name:
+                                                  description: Name of the secret.
+                                                    The provided secret must contain
+                                                    a key named cosign.pub.
+                                                  type: string
+                                                namespace:
+                                                  description: Namespace name where
+                                                    the Secret exists.
+                                                  type: string
+                                              required:
+                                              - name
+                                              - namespace
+                                              type: object
+                                            signatureAlgorithm:
+                                              default: sha256
+                                              description: Specify signature algorithm
+                                                for public keys. Supported values
+                                                are sha256 and sha512
+                                              type: string
                                           type: object
                                         repository:
                                           description: Repository is an optional alternate
@@ -8428,13 +8763,26 @@ spec:
                                               description: Keys specifies one or more
                                                 public keys
                                               properties:
+                                                kms:
+                                                  description: 'KMS provides the URI
+                                                    to the public key stored in a
+                                                    Key Management System. See: https://github.com/sigstore/cosign/blob/main/KMS.md'
+                                                  type: string
                                                 publicKeys:
                                                   description: Keys is a set of X.509
                                                     public keys used to verify image
                                                     signatures. The keys can be directly
                                                     specified or can be a variable
                                                     reference to a key specified in
-                                                    a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/).
+                                                    a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/),
+                                                    or reference a standard Kubernetes
+                                                    Secret elsewhere in the cluster
+                                                    by specifying it in the format
+                                                    "k8s://<namespace>/<secret_name>".
+                                                    The named Secret must specify
+                                                    a key `cosign.pub` containing
+                                                    the public key used for verification,
+                                                    (see https://github.com/sigstore/cosign/blob/main/KMS.md#kubernetes-secret).
                                                     When multiple keys are specified
                                                     each key is processed as a separate
                                                     staticKey entry (.attestors[*].entries.keys)
@@ -8459,6 +8807,30 @@ spec:
                                                   required:
                                                   - url
                                                   type: object
+                                                secret:
+                                                  description: Reference to a Secret
+                                                    resource that contains a public
+                                                    key
+                                                  properties:
+                                                    name:
+                                                      description: Name of the secret.
+                                                        The provided secret must contain
+                                                        a key named cosign.pub.
+                                                      type: string
+                                                    namespace:
+                                                      description: Namespace name
+                                                        where the Secret exists.
+                                                      type: string
+                                                  required:
+                                                  - name
+                                                  - namespace
+                                                  type: object
+                                                signatureAlgorithm:
+                                                  default: sha256
+                                                  description: Specify signature algorithm
+                                                    for public keys. Supported values
+                                                    are sha256 and sha512
+                                                  type: string
                                               type: object
                                             repository:
                                               description: Repository is an optional
@@ -8711,12 +9083,23 @@ spec:
                                         description: Keys specifies one or more public
                                           keys
                                         properties:
+                                          kms:
+                                            description: 'KMS provides the URI to
+                                              the public key stored in a Key Management
+                                              System. See: https://github.com/sigstore/cosign/blob/main/KMS.md'
+                                            type: string
                                           publicKeys:
                                             description: Keys is a set of X.509 public
                                               keys used to verify image signatures.
                                               The keys can be directly specified or
                                               can be a variable reference to a key
-                                              specified in a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/).
+                                              specified in a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/),
+                                              or reference a standard Kubernetes Secret
+                                              elsewhere in the cluster by specifying
+                                              it in the format "k8s://<namespace>/<secret_name>".
+                                              The named Secret must specify a key
+                                              `cosign.pub` containing the public key
+                                              used for verification, (see https://github.com/sigstore/cosign/blob/main/KMS.md#kubernetes-secret).
                                               When multiple keys are specified each
                                               key is processed as a separate staticKey
                                               entry (.attestors[*].entries.keys) within
@@ -8739,6 +9122,29 @@ spec:
                                             required:
                                             - url
                                             type: object
+                                          secret:
+                                            description: Reference to a Secret resource
+                                              that contains a public key
+                                            properties:
+                                              name:
+                                                description: Name of the secret. The
+                                                  provided secret must contain a key
+                                                  named cosign.pub.
+                                                type: string
+                                              namespace:
+                                                description: Namespace name where
+                                                  the Secret exists.
+                                                type: string
+                                            required:
+                                            - name
+                                            - namespace
+                                            type: object
+                                          signatureAlgorithm:
+                                            default: sha256
+                                            description: Specify signature algorithm
+                                              for public keys. Supported values are
+                                              sha256 and sha512
+                                            type: string
                                         type: object
                                       repository:
                                         description: Repository is an optional alternate
@@ -8796,15 +9202,17 @@ spec:
                   to "true", it must be set to "false" to disable the validation checks.
                 type: boolean
               validationFailureAction:
-                default: audit
+                default: Audit
                 description: ValidationFailureAction defines if a validation policy
                   rule violation should block the admission review request (enforce),
                   or allow (audit) the admission review request and report an error
                   in a policy report. Optional. Allowed values are audit or enforce.
-                  The default value is "audit".
+                  The default value is "Audit".
                 enum:
                 - audit
                 - enforce
+                - Audit
+                - Enforce
                 type: string
               validationFailureActionOverrides:
                 description: ValidationFailureActionOverrides is a Cluster Policy
@@ -8818,6 +9226,8 @@ spec:
                       enum:
                       - audit
                       - enforce
+                      - Audit
+                      - Enforce
                       type: string
                     namespaces:
                       items:
@@ -10531,6 +10941,10 @@ spec:
                                           type: object
                                       type: object
                                     type: array
+                                  foreach:
+                                    description: Foreach declares a nested foreach
+                                      iterator
+                                    x-kubernetes-preserve-unknown-fields: true
                                   list:
                                     description: List specifies a JMESPath expression
                                       that results in one or more elements to which
@@ -10856,6 +11270,10 @@ spec:
                                       as the validation scope within the foreach block
                                       to allow referencing other elements in the subtree.
                                     type: boolean
+                                  foreach:
+                                    description: Foreach declares a nested foreach
+                                      iterator
+                                    x-kubernetes-preserve-unknown-fields: true
                                   list:
                                     description: List specifies a JMESPath expression
                                       that results in one or more elements to which
@@ -11105,13 +11523,26 @@ spec:
                                               description: Keys specifies one or more
                                                 public keys
                                               properties:
+                                                kms:
+                                                  description: 'KMS provides the URI
+                                                    to the public key stored in a
+                                                    Key Management System. See: https://github.com/sigstore/cosign/blob/main/KMS.md'
+                                                  type: string
                                                 publicKeys:
                                                   description: Keys is a set of X.509
                                                     public keys used to verify image
                                                     signatures. The keys can be directly
                                                     specified or can be a variable
                                                     reference to a key specified in
-                                                    a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/).
+                                                    a ConfigMap (see https://kyverno.io/docs/writing-policies/variables/),
+                                                    or reference a standard Kubernetes
+                                                    Secret elsewhere in the cluster
+                                                    by specifying it in the format
+                                                    "k8s://<namespace>/<secret_name>".
+                                                    The named Secret must specify
+                                                    a key `cosign.pub` containing
+                                                    the public key used for verification,
+                                                    (see https://github.com/sigstore/cosign/blob/main/KMS.md#kubernetes-secret).
                                                     When multiple keys are specified
                                                     each key is processed as a separate
                                                     staticKey entry (.attestors[*].entries.keys)
@@ -11136,6 +11567,30 @@ spec:
                                                   required:
                                                   - url
                                                   type: object
+                                                secret:
+                                                  description: Reference to a Secret
+                                                    resource that contains a public
+                                                    key
+                                                  properties:
+                                                    name:
+                                                      description: Name of the secret.
+                                                        The provided secret must contain
+                                                        a key named cosign.pub.
+                                                      type: string
+                                                    namespace:
+                                                      description: Namespace name
+                                                        where the Secret exists.
+                                                      type: string
+                                                  required:
+                                                  - name
+                                                  - namespace
+                                                  type: object
+                                                signatureAlgorithm:
+                                                  default: sha256
+                                                  description: Specify signature algorithm
+                                                    for public keys. Supported values
+                                                    are sha256 and sha512
+                                                  type: string
                                               type: object
                                             repository:
                                               description: Repository is an optional
@@ -11439,6 +11894,12 @@ spec:
                                                   description: Keys specifies one
                                                     or more public keys
                                                   properties:
+                                                    kms:
+                                                      description: 'KMS provides the
+                                                        URI to the public key stored
+                                                        in a Key Management System.
+                                                        See: https://github.com/sigstore/cosign/blob/main/KMS.md'
+                                                      type: string
                                                     publicKeys:
                                                       description: Keys is a set of
                                                         X.509 public keys used to
@@ -11446,7 +11907,15 @@ spec:
                                                         keys can be directly specified
                                                         or can be a variable reference
                                                         to a key specified in a ConfigMap
-                                                        (see https://kyverno.io/docs/writing-policies/variables/).
+                                                        (see https://kyverno.io/docs/writing-policies/variables/),
+                                                        or reference a standard Kubernetes
+                                                        Secret elsewhere in the cluster
+                                                        by specifying it in the format
+                                                        "k8s://<namespace>/<secret_name>".
+                                                        The named Secret must specify
+                                                        a key `cosign.pub` containing
+                                                        the public key used for verification,
+                                                        (see https://github.com/sigstore/cosign/blob/main/KMS.md#kubernetes-secret).
                                                         When multiple keys are specified
                                                         each key is processed as a
                                                         separate staticKey entry (.attestors[*].entries.keys)
@@ -11473,6 +11942,32 @@ spec:
                                                       required:
                                                       - url
                                                       type: object
+                                                    secret:
+                                                      description: Reference to a
+                                                        Secret resource that contains
+                                                        a public key
+                                                      properties:
+                                                        name:
+                                                          description: Name of the
+                                                            secret. The provided secret
+                                                            must contain a key named
+                                                            cosign.pub.
+                                                          type: string
+                                                        namespace:
+                                                          description: Namespace name
+                                                            where the Secret exists.
+                                                          type: string
+                                                      required:
+                                                      - name
+                                                      - namespace
+                                                      type: object
+                                                    signatureAlgorithm:
+                                                      default: sha256
+                                                      description: Specify signature
+                                                        algorithm for public keys.
+                                                        Supported values are sha256
+                                                        and sha512
+                                                      type: string
                                                   type: object
                                                 repository:
                                                   description: Repository is an optional
@@ -11732,13 +12227,25 @@ spec:
                                             description: Keys specifies one or more
                                               public keys
                                             properties:
+                                              kms:
+                                                description: 'KMS provides the URI
+                                                  to the public key stored in a Key
+                                                  Management System. See: https://github.com/sigstore/cosign/blob/main/KMS.md'
+                                                type: string
                                               publicKeys:
                                                 description: Keys is a set of X.509
                                                   public keys used to verify image
                                                   signatures. The keys can be directly
                                                   specified or can be a variable reference
                                                   to a key specified in a ConfigMap
-                                                  (see https://kyverno.io/docs/writing-policies/variables/).
+                                                  (see https://kyverno.io/docs/writing-policies/variables/),
+                                                  or reference a standard Kubernetes
+                                                  Secret elsewhere in the cluster
+                                                  by specifying it in the format "k8s://<namespace>/<secret_name>".
+                                                  The named Secret must specify a
+                                                  key `cosign.pub` containing the
+                                                  public key used for verification,
+                                                  (see https://github.com/sigstore/cosign/blob/main/KMS.md#kubernetes-secret).
                                                   When multiple keys are specified
                                                   each key is processed as a separate
                                                   staticKey entry (.attestors[*].entries.keys)
@@ -11762,6 +12269,30 @@ spec:
                                                 required:
                                                 - url
                                                 type: object
+                                              secret:
+                                                description: Reference to a Secret
+                                                  resource that contains a public
+                                                  key
+                                                properties:
+                                                  name:
+                                                    description: Name of the secret.
+                                                      The provided secret must contain
+                                                      a key named cosign.pub.
+                                                    type: string
+                                                  namespace:
+                                                    description: Namespace name where
+                                                      the Secret exists.
+                                                    type: string
+                                                required:
+                                                - name
+                                                - namespace
+                                                type: object
+                                              signatureAlgorithm:
+                                                default: sha256
+                                                description: Specify signature algorithm
+                                                  for public keys. Supported values
+                                                  are sha256 and sha512
+                                                type: string
                                             type: object
                                           repository:
                                             description: Repository is an optional
@@ -11915,6 +12446,27 @@ spec:
                 description: Ready indicates if the policy is ready to serve the admission
                   request. Deprecated in favor of Conditions
                 type: boolean
+              rulecount:
+                description: RuleCount describes total number of rules in a policy
+                properties:
+                  generate:
+                    description: Count for generate rules in policy
+                    type: integer
+                  mutate:
+                    description: Count for mutate rules in policy
+                    type: integer
+                  validate:
+                    description: Count for validate rules in policy
+                    type: integer
+                  verifyimages:
+                    description: Count for verify image rules in policy
+                    type: integer
+                required:
+                - generate
+                - mutate
+                - validate
+                - verifyimages
+                type: object
             required:
             - ready
             type: object

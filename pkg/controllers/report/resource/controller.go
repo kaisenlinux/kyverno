@@ -13,15 +13,16 @@ import (
 	"github.com/kyverno/kyverno/pkg/clients/dclient"
 	"github.com/kyverno/kyverno/pkg/controllers"
 	"github.com/kyverno/kyverno/pkg/controllers/report/utils"
-	pkgutils "github.com/kyverno/kyverno/pkg/utils"
 	controllerutils "github.com/kyverno/kyverno/pkg/utils/controller"
 	kubeutils "github.com/kyverno/kyverno/pkg/utils/kube"
 	reportutils "github.com/kyverno/kyverno/pkg/utils/report"
+	"golang.org/x/exp/slices"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/tools/cache"
 	watchTools "k8s.io/client-go/tools/watch"
@@ -54,6 +55,7 @@ type EventHandler func(EventType, types.UID, schema.GroupVersionKind, Resource)
 
 type MetadataCache interface {
 	GetResourceHash(uid types.UID) (Resource, schema.GroupVersionKind, bool)
+	GetAllResourceKeys() []string
 	AddEventHandler(EventHandler)
 	Warmup(ctx context.Context) error
 }
@@ -120,6 +122,22 @@ func (c *controller) GetResourceHash(uid types.UID) (Resource, schema.GroupVersi
 		}
 	}
 	return Resource{}, schema.GroupVersionKind{}, false
+}
+
+func (c *controller) GetAllResourceKeys() []string {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	var keys []string
+	for _, watcher := range c.dynamicWatchers {
+		for uid, resource := range watcher.hashes {
+			key := string(uid)
+			if resource.Namespace != "" {
+				key = resource.Namespace + "/" + key
+			}
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }
 
 func (c *controller) AddEventHandler(eventHandler EventHandler) {
@@ -198,15 +216,15 @@ func (c *controller) updateDynamicWatchers(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	policies, err := c.fetchPolicies(logger, metav1.NamespaceAll)
+	policies, err := c.fetchPolicies(metav1.NamespaceAll)
 	if err != nil {
 		return err
 	}
-	kinds := utils.BuildKindSet(logger, utils.RemoveNonValidationPolicies(logger, append(clusterPolicies, policies...)...)...)
+	kinds := utils.BuildKindSet(logger, utils.RemoveNonValidationPolicies(append(clusterPolicies, policies...)...)...)
 	gvrs := map[schema.GroupVersionKind]schema.GroupVersionResource{}
-	for _, kind := range kinds.List() {
+	for _, kind := range sets.List(kinds) {
 		apiVersion, kind := kubeutils.GetKindFromGVK(kind)
-		apiResource, gvr, err := c.client.Discovery().FindResource(apiVersion, kind)
+		apiResource, _, gvr, err := c.client.Discovery().FindResource(apiVersion, kind)
 		if err != nil {
 			logger.Error(err, "failed to get gvr from kind", "kind", kind)
 		} else {
@@ -214,7 +232,7 @@ func (c *controller) updateDynamicWatchers(ctx context.Context) error {
 			if !reportutils.IsGvkSupported(gvk) {
 				logger.Info("kind is not supported", "gvk", gvk)
 			} else {
-				if pkgutils.ContainsString(apiResource.Verbs, "list") && pkgutils.ContainsString(apiResource.Verbs, "watch") {
+				if slices.Contains(apiResource.Verbs, "list") && slices.Contains(apiResource.Verbs, "watch") {
 					gvrs[gvk] = gvr
 				} else {
 					logger.Info("list/watch not supported for kind", "kind", kind)
@@ -307,7 +325,7 @@ func (c *controller) fetchClusterPolicies(logger logr.Logger) ([]kyvernov1.Polic
 	return policies, nil
 }
 
-func (c *controller) fetchPolicies(logger logr.Logger, namespace string) ([]kyvernov1.PolicyInterface, error) {
+func (c *controller) fetchPolicies(namespace string) ([]kyvernov1.PolicyInterface, error) {
 	var policies []kyvernov1.PolicyInterface
 	if pols, err := c.polLister.Policies(namespace).List(labels.Everything()); err != nil {
 		return nil, err

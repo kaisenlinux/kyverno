@@ -127,16 +127,38 @@ type Attestor struct {
 type StaticKeyAttestor struct {
 	// Keys is a set of X.509 public keys used to verify image signatures. The keys can be directly
 	// specified or can be a variable reference to a key specified in a ConfigMap (see
-	// https://kyverno.io/docs/writing-policies/variables/). When multiple keys are specified each
-	// key is processed as a separate staticKey entry (.attestors[*].entries.keys) within the set of
-	// attestors and the count is applied across the keys.
+	// https://kyverno.io/docs/writing-policies/variables/), or reference a standard Kubernetes Secret
+	// elsewhere in the cluster by specifying it in the format "k8s://<namespace>/<secret_name>".
+	// The named Secret must specify a key `cosign.pub` containing the public key used for
+	// verification, (see https://github.com/sigstore/cosign/blob/main/KMS.md#kubernetes-secret).
+	// When multiple keys are specified each key is processed as a separate staticKey entry
+	// (.attestors[*].entries.keys) within the set of attestors and the count is applied across the keys.
 	PublicKeys string `json:"publicKeys,omitempty" yaml:"publicKeys,omitempty"`
+
+	// Specify signature algorithm for public keys. Supported values are sha256 and sha512
+	// +kubebuilder:default=sha256
+	SignatureAlgorithm string `json:"signatureAlgorithm,omitempty" yaml:"signatureAlgorithm,omitempty"`
+
+	// KMS provides the URI to the public key stored in a Key Management System. See:
+	// https://github.com/sigstore/cosign/blob/main/KMS.md
+	KMS string `json:"kms,omitempty" yaml:"kms,omitempty"`
+
+	// Reference to a Secret resource that contains a public key
+	Secret *SecretReference `json:"secret,omitempty" yaml:"secret,omitempty"`
 
 	// Rekor provides configuration for the Rekor transparency log service. If the value is nil,
 	// Rekor is not checked. If an empty object is provided the public instance of
 	// Rekor (https://rekor.sigstore.dev) is used.
 	// +kubebuilder:validation:Optional
 	Rekor *CTLog `json:"rekor,omitempty" yaml:"rekor,omitempty"`
+}
+
+type SecretReference struct {
+	// Name of the secret. The provided secret must contain a key named cosign.pub.
+	Name string `json:"name" yaml:"name"`
+
+	// Namespace name where the Secret exists.
+	Namespace string `json:"namespace" yaml:"namespace"`
 }
 
 type CertificateAttestor struct {
@@ -317,10 +339,12 @@ func AttestorSetUnmarshal(o *apiextv1.JSON) (*AttestorSet, error) {
 }
 
 func (ska *StaticKeyAttestor) Validate(path *field.Path) (errs field.ErrorList) {
-	if ska.PublicKeys == "" {
-		errs = append(errs, field.Invalid(path, ska, "A key is required"))
+	if ska.PublicKeys == "" && ska.KMS == "" && ska.Secret == nil {
+		errs = append(errs, field.Invalid(path, ska, "A public key, kms key or secret is required"))
 	}
-
+	if ska.PublicKeys != "" && ska.SignatureAlgorithm != "" && ska.SignatureAlgorithm != "sha256" && ska.SignatureAlgorithm != "sha512" {
+		errs = append(errs, field.Invalid(path, ska, "Invalid signature algorithm provided"))
+	}
 	return errs
 }
 

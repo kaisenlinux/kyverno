@@ -1,5 +1,16 @@
-## v1.8.2-rc1
-- Multiple `imagePullSecrets` is not supported, only the first secret will be used if multiple secrets are specified via the `--imagePullSecrets` container flag.
+## v1.9.0-rc.1
+
+### Note
+
+- Flag `backgroundScanInterval` was added to force background scans at regular intervals (default value is `1h`).
+- Flag `splitPolicyReport` was removed, was unused and marked for removal in 1.9.
+- Webhook is no longer updated to match `pods/ephemeralcontainers` when policy only specifies `pods`. If users want to match on `pods/ephemeralcontainers`, they must specify `pods/ephemeralcontainers` in the policy.
+- Webhook is no longer updated to match `services/status` when policy only specifies `services`. If users want to match on `services/status`, they must specify `services/status` in the policy.
+- Flag `autogenInternals` was removed, policy mutation has been removed.
+- Flag `leaderElectionRetryPeriod` was added to control leader election renewal frequency (default value is `2s`).
+- Support upper case `Audit` and `Enforce` in `.spec.validationFailureAction` of the Kyverno policy, failure actions `audit` and `enforce` are deprecated and will be removed in `v1.11.0`.
+- Flag `profileAddress` was added to configure address of profiling server (default value is `""`).
+
 ## v1.8.1-rc3
 
 ### Note
@@ -20,8 +31,6 @@
 ## v1.8.0-rc1
 
 ### Note
-
-- The Kyverno Helm Charts versions are changed to follow semVer pattern. To install or upgrade to v1.8.0-rc1 or higher versions via Helm, specify the version with `--version 2.6.0-rc1`.
 
 - A new flag `protectManagedResources` to enable kyverno managed resources protection (default value is `false`). When this is enabled, kyverno managed resources can only be modified or deleted by the controller.
 

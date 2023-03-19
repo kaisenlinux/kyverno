@@ -46,7 +46,6 @@ func getPolicyKind(policy kyvernov1.PolicyInterface) string {
 	if policy.IsNamespaced() {
 		return "Policy"
 	}
-
 	return "ClusterPolicy"
 }
 
@@ -124,4 +123,54 @@ func NewBackgroundSuccessEvent(policy, rule string, source Source, r *unstructur
 	})
 
 	return events
+}
+
+func NewPolicyExceptionEvents(source Source, engineResponse *response.EngineResponse, ruleResp *response.RuleResponse) []Info {
+	exceptionName, exceptionNamespace := getExceptionEventInfoFromRuleResponseMsg(ruleResp.Message)
+	policyMessage := fmt.Sprintf("resource %s was skipped from rule %s due to policy exception %s/%s", resourceKey(engineResponse.PatchedResource), ruleResp.Name, exceptionNamespace, exceptionName)
+	var exceptionMessage string
+	if engineResponse.PolicyResponse.Policy.Namespace == "" {
+		exceptionMessage = fmt.Sprintf("resource %s was skipped from policy rule %s/%s", resourceKey(engineResponse.PatchedResource), engineResponse.PolicyResponse.Policy.Name, ruleResp.Name)
+	} else {
+		exceptionMessage = fmt.Sprintf("resource %s was skipped from policy rule %s/%s/%s", resourceKey(engineResponse.PatchedResource), engineResponse.PolicyResponse.Policy.Namespace, engineResponse.PolicyResponse.Policy.Name, ruleResp.Name)
+	}
+	policyEvent := Info{
+		Kind:      getPolicyKind(engineResponse.Policy),
+		Name:      engineResponse.PolicyResponse.Policy.Name,
+		Namespace: engineResponse.PolicyResponse.Policy.Namespace,
+		Source:    source,
+		Reason:    PolicySkipped.String(),
+		Message:   policyMessage,
+	}
+	exceptionEvent := Info{
+		Kind:      "PolicyException",
+		Name:      exceptionName,
+		Source:    source,
+		Namespace: exceptionNamespace,
+		Reason:    PolicySkipped.String(),
+		Message:   exceptionMessage,
+	}
+	return []Info{policyEvent, exceptionEvent}
+}
+
+func getExceptionEventInfoFromRuleResponseMsg(message string) (name string, namespace string) {
+	key := message[strings.LastIndex(message, " ")+1:]
+	arr := strings.Split(key, "/")
+
+	if len(arr) > 1 {
+		namespace = arr[0]
+		name = arr[1]
+	} else {
+		namespace = ""
+		name = arr[0]
+	}
+	return name, namespace
+}
+
+func resourceKey(resource unstructured.Unstructured) string {
+	if resource.GetNamespace() != "" {
+		return strings.Join([]string{resource.GetKind(), resource.GetNamespace(), resource.GetName()}, "/")
+	}
+
+	return strings.Join([]string{resource.GetKind(), resource.GetName()}, "/")
 }

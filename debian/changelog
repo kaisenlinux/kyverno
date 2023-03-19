@@ -1,3 +1,11 @@
+kyverno (1.9.1-1kaisen) kaisen-packages; urgency=medium
+
+  * Import the 1.9.1 version
+  * No display the commit ID (quilt patch)
+  * Improve the removal of git commit and use the static version number
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Sun, 19 Mar 2023 21:36:33 +0100
+
 kyverno (1.8.5-1kaisen) kaisen-packages; urgency=medium
 
   * Import the 1.8.5 version

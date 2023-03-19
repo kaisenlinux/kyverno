@@ -28,5 +28,5 @@ spec:
             - entries:
                 - keys:
                     publicKeys: '{{myconfigmap1.data.configmapkey}}'
-  validationFailureAction: audit
+  validationFailureAction: Audit
   webhookTimeoutSeconds: 30
