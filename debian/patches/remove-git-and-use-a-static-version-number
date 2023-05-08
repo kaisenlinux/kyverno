@@ -32,7 +32,7 @@ Author: Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>
  PACKAGE        ?= github.com/kyverno/kyverno
  CGO_ENABLED    ?= 0
 -LD_FLAGS        = "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=$(GIT_VERSION) -X $(PACKAGE)/pkg/version.BuildHash=$(GIT_HASH) -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
-+LD_FLAGS        = "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=1.9.1 -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
++LD_FLAGS        = "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=1.9.2 -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
  LD_FLAGS_DEV    = "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=$(GIT_VERSION_DEV) -X $(PACKAGE)/pkg/version.BuildHash=$(GIT_HASH) -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
  
  .PHONY: fmt
