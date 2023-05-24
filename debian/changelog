@@ -1,3 +1,10 @@
+kyverno (1.9.3-1kaisen) kaisen-packages; urgency=medium
+
+  * Import the 1.9.3 version
+  * Update the quilt patch
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Wed, 24 May 2023 01:28:52 +0100
+
 kyverno (1.9.2-1kaisen) kaisen-packages; urgency=medium
 
   * Import the 1.9.2 version

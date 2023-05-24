@@ -2,7 +2,7 @@
 
 Kubernetes Native Policy Management
 
-![Version: 2.7.2](https://img.shields.io/badge/Version-2.7.2-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v1.9.2](https://img.shields.io/badge/AppVersion-v1.9.2-informational?style=flat-square)
+![Version: 2.7.3](https://img.shields.io/badge/Version-2.7.3-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v1.9.3](https://img.shields.io/badge/AppVersion-v1.9.3-informational?style=flat-square)
 
 ## About
 
@@ -186,6 +186,7 @@ The command removes all the Kubernetes components associated with the chart and 
 | config.generateSuccessEvents | bool | `false` | Generate success events. |
 | config.metricsConfig | object | `{"annotations":{},"namespaces":{"exclude":[],"include":[]}}` | Metrics config. |
 | config.metricsConfig.annotations | object | `{}` | Additional annotations to add to the metricsconfigmap |
+| config.webhookAnnotations | object | `{}` | Defines annotations to set on webhook configurations. |
 | updateStrategy | object | See [values.yaml](values.yaml) | Deployment update strategy. Ref: https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy |
 | service.port | int | `443` | Service port. |
 | service.type | string | `"ClusterIP"` | Service type. |
