@@ -9,7 +9,7 @@ import (
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
 	kyvernov1alpha2 "github.com/kyverno/kyverno/api/kyverno/v1alpha2"
 	policyreportv1alpha2 "github.com/kyverno/kyverno/api/policyreport/v1alpha2"
-	"github.com/kyverno/kyverno/pkg/engine/response"
+	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	"golang.org/x/exp/slices"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
@@ -53,17 +53,17 @@ func CalculateSummary(results []policyreportv1alpha2.PolicyReportResult) (summar
 	return
 }
 
-func toPolicyResult(status response.RuleStatus) policyreportv1alpha2.PolicyResult {
+func toPolicyResult(status engineapi.RuleStatus) policyreportv1alpha2.PolicyResult {
 	switch status {
-	case response.RuleStatusPass:
+	case engineapi.RuleStatusPass:
 		return policyreportv1alpha2.StatusPass
-	case response.RuleStatusFail:
+	case engineapi.RuleStatusFail:
 		return policyreportv1alpha2.StatusFail
-	case response.RuleStatusError:
+	case engineapi.RuleStatusError:
 		return policyreportv1alpha2.StatusError
-	case response.RuleStatusWarn:
+	case engineapi.RuleStatusWarn:
 		return policyreportv1alpha2.StatusWarn
-	case response.RuleStatusSkip:
+	case engineapi.RuleStatusSkip:
 		return policyreportv1alpha2.StatusSkip
 	}
 	return ""
@@ -81,17 +81,17 @@ func severityFromString(severity string) policyreportv1alpha2.PolicySeverity {
 	return ""
 }
 
-func EngineResponseToReportResults(response *response.EngineResponse) []policyreportv1alpha2.PolicyReportResult {
-	key, _ := cache.MetaNamespaceKeyFunc(response.Policy)
+func EngineResponseToReportResults(response engineapi.EngineResponse) []policyreportv1alpha2.PolicyReportResult {
+	key, _ := cache.MetaNamespaceKeyFunc(response.Policy())
 	var results []policyreportv1alpha2.PolicyReportResult
 	for _, ruleResult := range response.PolicyResponse.Rules {
-		annotations := response.Policy.GetAnnotations()
+		annotations := response.Policy().GetAnnotations()
 		result := policyreportv1alpha2.PolicyReportResult{
 			Source:  kyvernov1.ValueKyvernoApp,
 			Policy:  key,
-			Rule:    ruleResult.Name,
-			Message: ruleResult.Message,
-			Result:  toPolicyResult(ruleResult.Status),
+			Rule:    ruleResult.Name(),
+			Message: ruleResult.Message(),
+			Result:  toPolicyResult(ruleResult.Status()),
 			Scored:  annotations[kyvernov1.AnnotationPolicyScored] != "false",
 			Timestamp: metav1.Timestamp{
 				Seconds: time.Now().Unix(),
@@ -99,9 +99,10 @@ func EngineResponseToReportResults(response *response.EngineResponse) []policyre
 			Category: annotations[kyvernov1.AnnotationPolicyCategory],
 			Severity: severityFromString(annotations[kyvernov1.AnnotationPolicySeverity]),
 		}
-		if ruleResult.PodSecurityChecks != nil {
+		pss := ruleResult.PodSecurityChecks()
+		if pss != nil {
 			var controls []string
-			for _, check := range ruleResult.PodSecurityChecks.Checks {
+			for _, check := range pss.Checks {
 				if !check.CheckResult.Allowed {
 					controls = append(controls, check.ID)
 				}
@@ -109,8 +110,8 @@ func EngineResponseToReportResults(response *response.EngineResponse) []policyre
 			if len(controls) > 0 {
 				sort.Strings(controls)
 				result.Properties = map[string]string{
-					"standard": string(ruleResult.PodSecurityChecks.Level),
-					"version":  ruleResult.PodSecurityChecks.Version,
+					"standard": string(pss.Level),
+					"version":  pss.Version,
 					"controls": strings.Join(controls, ","),
 				}
 			}
@@ -153,10 +154,10 @@ func SetResults(report kyvernov1alpha2.ReportInterface, results ...policyreportv
 	report.SetSummary(CalculateSummary(results))
 }
 
-func SetResponses(report kyvernov1alpha2.ReportInterface, engineResponses ...*response.EngineResponse) {
+func SetResponses(report kyvernov1alpha2.ReportInterface, engineResponses ...engineapi.EngineResponse) {
 	var ruleResults []policyreportv1alpha2.PolicyReportResult
 	for _, result := range engineResponses {
-		SetPolicyLabel(report, result.Policy)
+		SetPolicyLabel(report, result.Policy())
 		ruleResults = append(ruleResults, EngineResponseToReportResults(result)...)
 	}
 	SetResults(report, ruleResults...)

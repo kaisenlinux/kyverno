@@ -5,28 +5,24 @@ import (
 
 	"github.com/go-logr/logr"
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
-	"github.com/kyverno/kyverno/pkg/clients/dclient"
 	"github.com/kyverno/kyverno/pkg/config"
 	"github.com/kyverno/kyverno/pkg/engine"
+	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	enginecontext "github.com/kyverno/kyverno/pkg/engine/context"
-	"github.com/kyverno/kyverno/pkg/engine/context/resolvers"
-	"github.com/kyverno/kyverno/pkg/engine/response"
-	"github.com/kyverno/kyverno/pkg/registryclient"
+	"github.com/kyverno/kyverno/pkg/engine/jmespath"
 	"go.uber.org/multierr"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 type scanner struct {
-	logger                 logr.Logger
-	client                 dclient.Interface
-	rclient                registryclient.Client
-	informerCacheResolvers resolvers.ConfigmapResolver
-	polexLister            engine.PolicyExceptionLister
-	excludeGroupRole       []string
+	logger logr.Logger
+	engine engineapi.Engine
+	config config.Configuration
+	jp     jmespath.Interface
 }
 
 type ScanResult struct {
-	EngineResponse *response.EngineResponse
+	EngineResponse *engineapi.EngineResponse
 	Error          error
 }
 
@@ -36,20 +32,15 @@ type Scanner interface {
 
 func NewScanner(
 	logger logr.Logger,
-	client dclient.Interface,
-	rclient registryclient.Client,
-	informerCacheResolvers resolvers.ConfigmapResolver,
-	polexLister engine.PolicyExceptionLister,
+	engine engineapi.Engine,
 	config config.Configuration,
-	excludeGroupRole ...string,
+	jp jmespath.Interface,
 ) Scanner {
 	return &scanner{
-		logger:                 logger,
-		client:                 client,
-		rclient:                rclient,
-		informerCacheResolvers: informerCacheResolvers,
-		polexLister:            polexLister,
-		excludeGroupRole:       excludeGroupRole,
+		logger: logger,
+		engine: engine,
+		config: config,
+		jp:     jp,
 	}
 }
 
@@ -57,21 +48,22 @@ func (s *scanner) ScanResource(ctx context.Context, resource unstructured.Unstru
 	results := map[kyvernov1.PolicyInterface]ScanResult{}
 	for _, policy := range policies {
 		var errors []error
+		logger := s.logger.WithValues("kind", resource.GetKind(), "namespace", resource.GetNamespace(), "name", resource.GetName())
 		response, err := s.validateResource(ctx, resource, nsLabels, policy)
 		if err != nil {
-			s.logger.Error(err, "failed to scan resource")
+			logger.Error(err, "failed to scan resource")
 			errors = append(errors, err)
 		}
 		spec := policy.GetSpec()
 		if spec.HasVerifyImages() {
 			ivResponse, err := s.validateImages(ctx, resource, nsLabels, policy)
 			if err != nil {
-				s.logger.Error(err, "failed to scan images")
+				logger.Error(err, "failed to scan images")
 				errors = append(errors, err)
 			}
 			if response == nil {
 				response = ivResponse
-			} else {
+			} else if ivResponse != nil {
 				response.PolicyResponse.Rules = append(response.PolicyResponse.Rules, ivResponse.PolicyResponse.Rules...)
 			}
 		}
@@ -80,56 +72,55 @@ func (s *scanner) ScanResource(ctx context.Context, resource unstructured.Unstru
 	return results
 }
 
-func (s *scanner) validateResource(ctx context.Context, resource unstructured.Unstructured, nsLabels map[string]string, policy kyvernov1.PolicyInterface) (*response.EngineResponse, error) {
-	enginectx := enginecontext.NewContext()
+func (s *scanner) validateResource(ctx context.Context, resource unstructured.Unstructured, nsLabels map[string]string, policy kyvernov1.PolicyInterface) (*engineapi.EngineResponse, error) {
+	enginectx := enginecontext.NewContext(s.jp)
 	if err := enginectx.AddResource(resource.Object); err != nil {
 		return nil, err
 	}
 	if err := enginectx.AddNamespace(resource.GetNamespace()); err != nil {
 		return nil, err
 	}
-	if err := enginectx.AddImageInfos(&resource); err != nil {
+	if err := enginectx.AddImageInfos(&resource, s.config); err != nil {
 		return nil, err
 	}
 	if err := enginectx.AddOperation("CREATE"); err != nil {
 		return nil, err
 	}
-	policyCtx := engine.NewPolicyContextWithJsonContext(enginectx).
+	policyCtx := engine.NewPolicyContextWithJsonContext(kyvernov1.Create, enginectx).
 		WithNewResource(resource).
 		WithPolicy(policy).
-		WithClient(s.client).
-		WithNamespaceLabels(nsLabels).
-		WithExcludeGroupRole(s.excludeGroupRole...).
-		WithInformerCacheResolver(s.informerCacheResolvers).
-		WithExceptions(s.polexLister)
-	return engine.Validate(ctx, s.rclient, policyCtx), nil
+		WithNamespaceLabels(nsLabels)
+	response := s.engine.Validate(ctx, policyCtx)
+	return &response, nil
 }
 
-func (s *scanner) validateImages(ctx context.Context, resource unstructured.Unstructured, nsLabels map[string]string, policy kyvernov1.PolicyInterface) (*response.EngineResponse, error) {
-	enginectx := enginecontext.NewContext()
+func (s *scanner) validateImages(ctx context.Context, resource unstructured.Unstructured, nsLabels map[string]string, policy kyvernov1.PolicyInterface) (*engineapi.EngineResponse, error) {
+	annotations := resource.GetAnnotations()
+	if annotations != nil {
+		resource = *resource.DeepCopy()
+		delete(annotations, "kyverno.io/verify-images")
+		resource.SetAnnotations(annotations)
+	}
+	enginectx := enginecontext.NewContext(s.jp)
 	if err := enginectx.AddResource(resource.Object); err != nil {
 		return nil, err
 	}
 	if err := enginectx.AddNamespace(resource.GetNamespace()); err != nil {
 		return nil, err
 	}
-	if err := enginectx.AddImageInfos(&resource); err != nil {
+	if err := enginectx.AddImageInfos(&resource, s.config); err != nil {
 		return nil, err
 	}
 	if err := enginectx.AddOperation("CREATE"); err != nil {
 		return nil, err
 	}
-	policyCtx := engine.NewPolicyContextWithJsonContext(enginectx).
+	policyCtx := engine.NewPolicyContextWithJsonContext(kyvernov1.Create, enginectx).
 		WithNewResource(resource).
 		WithPolicy(policy).
-		WithClient(s.client).
-		WithNamespaceLabels(nsLabels).
-		WithExcludeGroupRole(s.excludeGroupRole...).
-		WithInformerCacheResolver(s.informerCacheResolvers).
-		WithExceptions(s.polexLister)
-	response, _ := engine.VerifyAndPatchImages(ctx, s.rclient, policyCtx)
+		WithNamespaceLabels(nsLabels)
+	response, _ := s.engine.VerifyAndPatchImages(ctx, policyCtx)
 	if len(response.PolicyResponse.Rules) > 0 {
 		s.logger.Info("validateImages", "policy", policy, "response", response)
 	}
-	return response, nil
+	return &response, nil
 }

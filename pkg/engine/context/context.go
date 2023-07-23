@@ -9,9 +9,10 @@ import (
 	jsonpatch "github.com/evanphx/json-patch/v5"
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
 	kyvernov1beta1 "github.com/kyverno/kyverno/api/kyverno/v1beta1"
+	"github.com/kyverno/kyverno/pkg/config"
+	"github.com/kyverno/kyverno/pkg/engine/jmespath"
 	"github.com/kyverno/kyverno/pkg/logging"
 	apiutils "github.com/kyverno/kyverno/pkg/utils/api"
-	"github.com/pkg/errors"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -19,6 +20,7 @@ import (
 var logger = logging.WithName("context")
 
 // EvalInterface is used to query and inspect context data
+// TODO: move to contextapi to prevent circular dependencies
 type EvalInterface interface {
 	// Query accepts a JMESPath expression and returns matching data
 	Query(query string) (interface{}, error)
@@ -31,9 +33,10 @@ type EvalInterface interface {
 }
 
 // Interface to manage context operations
+// TODO: move to contextapi to prevent circular dependencies
 type Interface interface {
 	// AddRequest marshals and adds the admission request to the context
-	AddRequest(request *admissionv1.AdmissionRequest) error
+	AddRequest(request admissionv1.AdmissionRequest) error
 
 	// AddVariable adds a variable to the context
 	AddVariable(key string, value interface{}) error
@@ -50,8 +53,8 @@ type Interface interface {
 	// AddOldResource merges resource json under request.oldObject
 	AddOldResource(data map[string]interface{}) error
 
-	// AddTargetResource merges resource json under target
-	AddTargetResource(data map[string]interface{}) error
+	// SetTargetResource merges resource json under target
+	SetTargetResource(data map[string]interface{}) error
 
 	// AddOperation merges operation under request.operation
 	AddOperation(data string) error
@@ -69,17 +72,21 @@ type Interface interface {
 	AddElement(data interface{}, index, nesting int) error
 
 	// AddImageInfo adds image info to the context
-	AddImageInfo(info apiutils.ImageInfo) error
+	AddImageInfo(info apiutils.ImageInfo, cfg config.Configuration) error
 
 	// AddImageInfos adds image infos to the context
-	AddImageInfos(resource *unstructured.Unstructured) error
+	AddImageInfos(resource *unstructured.Unstructured, cfg config.Configuration) error
+
+	// AddDeferredLoader adds a loader that is executed on first use (query)
+	// If deferred loading is disabled the loader is immediately executed.
+	AddDeferredLoader(loader DeferredLoader) error
 
 	// ImageInfo returns image infos present in the context
 	ImageInfo() map[string]map[string]apiutils.ImageInfo
 
 	// GenerateCustomImageInfo returns image infos as defined by a custom image extraction config
 	// and updates the context
-	GenerateCustomImageInfo(resource *unstructured.Unstructured, imageExtractorConfigs kyvernov1.ImageExtractorConfigs) (map[string]map[string]apiutils.ImageInfo, error)
+	GenerateCustomImageInfo(resource *unstructured.Unstructured, imageExtractorConfigs kyvernov1.ImageExtractorConfigs, cfg config.Configuration) (map[string]map[string]apiutils.ImageInfo, error)
 
 	// Checkpoint creates a copy of the current internal state and pushes it into a stack of stored states.
 	Checkpoint()
@@ -98,24 +105,27 @@ type Interface interface {
 
 // Context stores the data resources as JSON
 type context struct {
+	jp                 jmespath.Interface
 	mutex              sync.RWMutex
 	jsonRaw            []byte
 	jsonRawCheckpoints [][]byte
 	images             map[string]map[string]apiutils.ImageInfo
+	deferred           DeferredLoaders
 }
 
 // NewContext returns a new context
-func NewContext() Interface {
-	return NewContextFromRaw([]byte(`{}`))
+func NewContext(jp jmespath.Interface) Interface {
+	return NewContextFromRaw(jp, []byte(`{}`))
 }
 
 // NewContextFromRaw returns a new context initialized with raw data
-func NewContextFromRaw(raw []byte) Interface {
-	ctx := context{
+func NewContextFromRaw(jp jmespath.Interface, raw []byte) Interface {
+	return &context{
+		jp:                 jp,
 		jsonRaw:            raw,
 		jsonRawCheckpoints: make([][]byte, 0),
+		deferred:           NewDeferredLoaders(),
 	}
-	return &ctx
 }
 
 // addJSON merges json data
@@ -124,14 +134,14 @@ func (ctx *context) addJSON(dataRaw []byte) error {
 	defer ctx.mutex.Unlock()
 	json, err := jsonpatch.MergeMergePatches(ctx.jsonRaw, dataRaw)
 	if err != nil {
-		return errors.Wrap(err, "failed to merge JSON data")
+		return fmt.Errorf("failed to merge JSON data: %w", err)
 	}
 	ctx.jsonRaw = json
 	return nil
 }
 
 // AddRequest adds an admission request to context
-func (ctx *context) AddRequest(request *admissionv1.AdmissionRequest) error {
+func (ctx *context) AddRequest(request admissionv1.AdmissionRequest) error {
 	return addToContext(ctx, request, "request")
 }
 
@@ -173,7 +183,11 @@ func (ctx *context) AddOldResource(data map[string]interface{}) error {
 }
 
 // AddTargetResource adds data at path: target
-func (ctx *context) AddTargetResource(data map[string]interface{}) error {
+func (ctx *context) SetTargetResource(data map[string]interface{}) error {
+	if err := addToContext(ctx, nil, "target"); err != nil {
+		logger.Error(err, "unable to replace target resource")
+		return err
+	}
 	return addToContext(ctx, data, "target")
 }
 
@@ -252,7 +266,7 @@ func (ctx *context) AddElement(data interface{}, index, nesting int) error {
 	return addToContext(ctx, data)
 }
 
-func (ctx *context) AddImageInfo(info apiutils.ImageInfo) error {
+func (ctx *context) AddImageInfo(info apiutils.ImageInfo, cfg config.Configuration) error {
 	data := map[string]interface{}{
 		"reference":        info.String(),
 		"referenceWithTag": info.ReferenceWithTag(),
@@ -265,8 +279,8 @@ func (ctx *context) AddImageInfo(info apiutils.ImageInfo) error {
 	return addToContext(ctx, data, "image")
 }
 
-func (ctx *context) AddImageInfos(resource *unstructured.Unstructured) error {
-	images, err := apiutils.ExtractImagesFromResource(*resource, nil)
+func (ctx *context) AddImageInfos(resource *unstructured.Unstructured, cfg config.Configuration) error {
+	images, err := apiutils.ExtractImagesFromResource(*resource, nil, cfg)
 	if err != nil {
 		return err
 	}
@@ -279,10 +293,10 @@ func (ctx *context) AddImageInfos(resource *unstructured.Unstructured) error {
 	return addToContext(ctx, images, "images")
 }
 
-func (ctx *context) GenerateCustomImageInfo(resource *unstructured.Unstructured, imageExtractorConfigs kyvernov1.ImageExtractorConfigs) (map[string]map[string]apiutils.ImageInfo, error) {
-	images, err := apiutils.ExtractImagesFromResource(*resource, imageExtractorConfigs)
+func (ctx *context) GenerateCustomImageInfo(resource *unstructured.Unstructured, imageExtractorConfigs kyvernov1.ImageExtractorConfigs, cfg config.Configuration) (map[string]map[string]apiutils.ImageInfo, error) {
+	images, err := apiutils.ExtractImagesFromResource(*resource, imageExtractorConfigs, cfg)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to extract images")
+		return nil, fmt.Errorf("failed to extract images: %w", err)
 	}
 
 	if len(images) == 0 {
@@ -317,17 +331,32 @@ func (ctx *context) Reset() {
 	ctx.reset(false)
 }
 
-func (ctx *context) reset(remove bool) {
+func (ctx *context) reset(restore bool) {
+	if ctx.resetCheckpoint(restore) {
+		ctx.deferred.Reset(restore, len(ctx.jsonRawCheckpoints))
+	}
+}
+
+func (ctx *context) resetCheckpoint(removeCheckpoint bool) bool {
 	ctx.mutex.Lock()
 	defer ctx.mutex.Unlock()
+
 	if len(ctx.jsonRawCheckpoints) == 0 {
-		return
+		return false
 	}
+
 	n := len(ctx.jsonRawCheckpoints) - 1
 	jsonRawCheckpoint := ctx.jsonRawCheckpoints[n]
 	ctx.jsonRaw = make([]byte, len(jsonRawCheckpoint))
 	copy(ctx.jsonRaw, jsonRawCheckpoint)
-	if remove {
+	if removeCheckpoint {
 		ctx.jsonRawCheckpoints = ctx.jsonRawCheckpoints[:n]
 	}
+
+	return true
+}
+
+func (ctx *context) AddDeferredLoader(dl DeferredLoader) error {
+	ctx.deferred.Add(dl, len(ctx.jsonRawCheckpoints))
+	return nil
 }

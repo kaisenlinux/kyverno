@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	logr "github.com/go-logr/logr"
+	"github.com/go-logr/logr"
 	kyvernov1beta1 "github.com/kyverno/kyverno/api/kyverno/v1beta1"
 	"github.com/kyverno/kyverno/pkg/clients/dclient"
 	kubeutils "github.com/kyverno/kyverno/pkg/utils/kube"
@@ -16,7 +16,7 @@ import (
 )
 
 func GetResource(client dclient.Interface, urSpec kyvernov1beta1.UpdateRequestSpec, log logr.Logger) (*unstructured.Unstructured, error) {
-	resourceSpec := urSpec.Resource
+	resourceSpec := urSpec.GetResource()
 
 	get := func() (*unstructured.Unstructured, error) {
 		if resourceSpec.Kind == "Namespace" {
@@ -24,17 +24,12 @@ func GetResource(client dclient.Interface, urSpec kyvernov1beta1.UpdateRequestSp
 		}
 		resource, err := client.GetResource(context.TODO(), resourceSpec.APIVersion, resourceSpec.Kind, resourceSpec.Namespace, resourceSpec.Name)
 		if err != nil {
-			if urSpec.Type == kyvernov1beta1.Mutate && errors.IsNotFound(err) && urSpec.Context.AdmissionRequestInfo.Operation == admissionv1.Delete {
+			if urSpec.GetRequestType() == kyvernov1beta1.Mutate && errors.IsNotFound(err) && urSpec.Context.AdmissionRequestInfo.Operation == admissionv1.Delete {
 				log.V(4).Info("trigger resource does not exist for mutateExisting rule", "operation", urSpec.Context.AdmissionRequestInfo.Operation)
 				return nil, nil
 			}
 
 			return nil, fmt.Errorf("resource %s/%s/%s/%s: %v", resourceSpec.APIVersion, resourceSpec.Kind, resourceSpec.Namespace, resourceSpec.Name, err)
-		}
-
-		if resource.GetDeletionTimestamp() != nil {
-			log.V(4).Info("trigger resource is in termination", "operation", urSpec.Context.AdmissionRequestInfo.Operation)
-			return nil, nil
 		}
 
 		return resource, nil

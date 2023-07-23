@@ -13,7 +13,7 @@ func Test_Validate_RuleType_EmptyRule(t *testing.T) {
 		Name: "validate-user-privilege",
 	}
 	path := field.NewPath("dummy")
-	errs := subject.Validate(path, false, nil)
+	errs := subject.Validate(path, false, "", nil)
 	assert.Equal(t, len(errs), 1)
 	assert.Equal(t, errs[0].Field, "dummy")
 	assert.Equal(t, errs[0].Type, field.ErrorTypeInvalid)
@@ -94,7 +94,7 @@ func Test_Validate_RuleType_MultipleRule(t *testing.T) {
 	assert.NilError(t, err)
 	for _, rule := range policy.Spec.Rules {
 		path := field.NewPath("dummy")
-		errs := rule.Validate(path, false, nil)
+		errs := rule.Validate(path, false, "", nil)
 		assert.Assert(t, len(errs) != 0)
 	}
 }
@@ -153,7 +153,7 @@ func Test_Validate_RuleType_SingleRule(t *testing.T) {
 	assert.NilError(t, err)
 	for _, rule := range policy.Spec.Rules {
 		path := field.NewPath("dummy")
-		errs := rule.Validate(path, false, nil)
+		errs := rule.Validate(path, false, "", nil)
 		assert.Assert(t, len(errs) == 0)
 	}
 }
@@ -233,5 +233,308 @@ func Test_doesMatchExcludeConflict(t *testing.T) {
 		for i := range errs {
 			assert.Equal(t, errs[i].Error(), expectedErrs[i].Error())
 		}
+	}
+}
+
+func Test_Validate_ClusterPolicy_Generate_Variables(t *testing.T) {
+	path := field.NewPath("dummy")
+	testcases := []struct {
+		name       string
+		rule       []byte
+		shouldFail bool
+	}{
+		{
+			name: "clone-name",
+			rule: []byte(`
+			{
+				"name": "clone-secret",
+				"match": {
+					"any": [
+						{
+							"resources": {
+								"kinds": [
+									"Namespace"
+								]
+							}
+						}
+					]
+				},
+				"generate": {
+					"apiVersion": "v1",
+					"kind": "Secret",
+					"name": "regcred",
+					"namespace": "test",
+					"synchronize": true,
+					"clone": {
+						"namespace": "default",
+						"name": "{{request.object.metadata.name}}"
+					}
+				}
+			}`),
+			shouldFail: true,
+		},
+		{
+			name: "clone-namespace",
+			rule: []byte(`
+			{
+				"name": "clone-secret",
+				"match": {
+					"any": [
+						{
+							"resources": {
+								"kinds": [
+									"Namespace"
+								]
+							}
+						}
+					]
+				},
+				"generate": {
+					"apiVersion": "v1",
+					"kind": "Secret",
+					"name": "regcred",
+					"namespace": "test",
+					"synchronize": true,
+					"clone": {
+						"namespace": "{{request.object.metadata.name}}",
+						"name": "regcred"
+					}
+				}
+			}`),
+			shouldFail: true,
+		},
+		{
+			name: "cloneList-namespace",
+			rule: []byte(`
+			{
+				"name": "sync-secret",
+				"match": {
+					"any": [
+						{
+							"resources": {
+								"kinds": [
+									"Namespace"
+								]
+							}
+						}
+					]
+				},
+				"generate": {
+					"namespace": "test",
+					"synchronize": true,
+					"cloneList": {
+						"namespace": "{{request.object.metadata.name}}",
+						"kinds": [
+							"v1/Secret",
+							"v1/ConfigMap"
+						],
+						"selector": {
+							"matchLabels": {
+								"allowedToBeCloned": "true"
+							}
+						}
+					}
+				}
+			}`),
+			shouldFail: true,
+		},
+		{
+			name: "cloneList-kinds",
+			rule: []byte(`
+			{
+				"name": "sync-secret",
+				"match": {
+					"any": [
+						{
+							"resources": {
+								"kinds": [
+									"Namespace"
+								]
+							}
+						}
+					]
+				},
+				"generate": {
+					"namespace": "test",
+					"synchronize": true,
+					"cloneList": {
+						"namespace": "default",
+						"kinds": [
+							"{{request.object.metadata.kind}}",
+							"v1/ConfigMap"
+						],
+						"selector": {
+							"matchLabels": {
+								"allowedToBeCloned": "true"
+							}
+						}
+					}
+				}
+			}`),
+			shouldFail: true,
+		},
+		{
+			name: "cloneList-selector",
+			rule: []byte(`
+			{
+				"name": "sync-secret",
+				"match": {
+					"any": [
+						{
+							"resources": {
+								"kinds": [
+									"Namespace"
+								]
+							}
+						}
+					]
+				},
+				"generate": {
+					"namespace": "test",
+					"synchronize": true,
+					"cloneList": {
+						"namespace": "default",
+						"kinds": [
+							"v1/Secret",
+							"v1/ConfigMap"
+						],
+						"selector": {
+							"matchLabels": {
+								"{{request.object.metadata.name}}": "clone"
+							}
+						}
+					}
+				}
+			}`),
+			shouldFail: true,
+		},
+		{
+			name: "generate-downstream-namespace",
+			rule: []byte(`
+			{
+				"name": "clone-secret",
+				"match": {
+					"any": [
+						{
+							"resources": {
+								"kinds": [
+									"Namespace"
+								]
+							}
+						}
+					]
+				},
+				"generate": {
+					"apiVersion": "v1",
+					"kind": "Secret",
+					"name": "regcred",
+					"namespace": "{{request.object.metadata.name}}",
+					"synchronize": true,
+					"clone": {
+						"namespace": "default",
+						"name": "regcred"
+					}
+				}
+			}`),
+			shouldFail: false,
+		},
+		{
+			name: "generate-downstream-kind",
+			rule: []byte(`
+			{
+				"name": "clone-secret",
+				"match": {
+					"any": [
+						{
+							"resources": {
+								"kinds": [
+									"Namespace"
+								]
+							}
+						}
+					]
+				},
+				"generate": {
+					"apiVersion": "v1",
+					"kind": "{{request.object.metadata.kind}}",
+					"name": "regcred",
+					"namespace": "default",
+					"synchronize": true,
+					"clone": {
+						"namespace": "default",
+						"name": "regcred"
+					}
+				}
+			}`),
+			shouldFail: true,
+		},
+		{
+			name: "generate-downstream-apiversion",
+			rule: []byte(`
+			{
+				"name": "clone-secret",
+				"match": {
+					"any": [
+						{
+							"resources": {
+								"kinds": [
+									"Namespace"
+								]
+							}
+						}
+					]
+				},
+				"generate": {
+					"kind": "Secret",
+					"apiVersion": "{{request.object.metadata.apiVersion}}",
+					"name": "regcred",
+					"namespace": "default",
+					"synchronize": true,
+					"clone": {
+						"namespace": "default",
+						"name": "regcred"
+					}
+				}
+			}`),
+			shouldFail: true,
+		},
+		{
+			name: "generate-downstream-name",
+			rule: []byte(`
+			{
+				"name": "clone-secret",
+				"match": {
+					"any": [
+						{
+							"resources": {
+								"kinds": [
+									"Namespace"
+								]
+							}
+						}
+					]
+				},
+				"generate": {
+					"apiVersion": "v1",
+					"kind": "Secret",
+					"name": "{{request.object.metadata.name}}",
+					"namespace": "default",
+					"synchronize": true,
+					"clone": {
+						"namespace": "default",
+						"name": "regcred"
+					}
+				}
+			}`),
+			shouldFail: false,
+		},
+	}
+
+	for _, testcase := range testcases {
+		var rule *Rule
+		err := json.Unmarshal(testcase.rule, &rule)
+		assert.NilError(t, err, testcase.name)
+		errs := rule.ValidateGenerate(path, false, "", nil)
+		assert.Equal(t, len(errs) != 0, testcase.shouldFail, testcase.name)
 	}
 }

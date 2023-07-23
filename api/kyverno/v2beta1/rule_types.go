@@ -2,9 +2,9 @@ package v2beta1
 
 import (
 	"fmt"
-	"reflect"
 
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
+	datautils "github.com/kyverno/kyverno/pkg/utils/data"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
@@ -15,7 +15,7 @@ import (
 type Rule struct {
 	// Name is a label to identify the rule, It must be unique within the policy.
 	// +kubebuilder:validation:MaxLength=63
-	Name string `json:"name,omitempty" yaml:"name,omitempty"`
+	Name string `json:"name" yaml:"name"`
 
 	// Context defines variables and data sources that can be used during rule execution.
 	// +optional
@@ -64,49 +64,47 @@ type Rule struct {
 
 // HasMutate checks for mutate rule
 func (r *Rule) HasMutate() bool {
-	return !reflect.DeepEqual(r.Mutation, kyvernov1.Mutation{})
+	return !datautils.DeepEqual(r.Mutation, kyvernov1.Mutation{})
 }
 
 // HasVerifyImages checks for verifyImages rule
 func (r *Rule) HasVerifyImages() bool {
-	return r.VerifyImages != nil && !reflect.DeepEqual(r.VerifyImages, ImageVerification{})
+	for _, verifyImage := range r.VerifyImages {
+		if !datautils.DeepEqual(verifyImage, ImageVerification{}) {
+			return true
+		}
+	}
+	return false
 }
 
-// HasYAMLSignatureVerify checks for validate.manifests rule
-func (r Rule) HasYAMLSignatureVerify() bool {
-	return r.Validation.Manifests != nil && len(r.Validation.Manifests.Attestors) != 0
-}
-
-// HasImagesValidationChecks checks whether the verifyImages rule has validation checks
-func (r *Rule) HasImagesValidationChecks() bool {
+// HasVerifyImageChecks checks whether the verifyImages rule has validation checks
+func (r *Rule) HasVerifyImageChecks() bool {
 	for _, v := range r.VerifyImages {
 		if v.VerifyDigest || v.Required {
 			return true
 		}
 	}
-
 	return false
 }
 
-// HasYAMLSignatureVerify checks for validate rule
-func (p *ClusterPolicy) HasYAMLSignatureVerify() bool {
-	for _, rule := range p.Spec.Rules {
-		if rule.HasYAMLSignatureVerify() {
-			return true
-		}
-	}
+// HasVerifyManifests checks for validate.manifests rule
+func (r Rule) HasVerifyManifests() bool {
+	return r.Validation.Manifests != nil && len(r.Validation.Manifests.Attestors) != 0
+}
 
-	return false
+// HasValidatePodSecurity checks for validate.podSecurity rule
+func (r Rule) HasValidatePodSecurity() bool {
+	return r.Validation.PodSecurity != nil && !datautils.DeepEqual(r.Validation.PodSecurity, &kyvernov1.PodSecurity{})
 }
 
 // HasValidate checks for validate rule
 func (r *Rule) HasValidate() bool {
-	return !reflect.DeepEqual(r.Validation, Validation{})
+	return !datautils.DeepEqual(r.Validation, Validation{})
 }
 
 // HasGenerate checks for generate rule
 func (r *Rule) HasGenerate() bool {
-	return !reflect.DeepEqual(r.Generation, kyvernov1.Generation{})
+	return !datautils.DeepEqual(r.Generation, kyvernov1.Generation{})
 }
 
 // IsMutateExisting checks if the mutate rule applies to existing resources
@@ -114,18 +112,11 @@ func (r *Rule) IsMutateExisting() bool {
 	return r.Mutation.Targets != nil
 }
 
-// IsCloneSyncGenerate checks if the generate rule has the clone block with sync=true
-func (r *Rule) GetCloneSyncForGenerate() (clone bool, sync bool) {
+func (r *Rule) GetGenerateTypeAndSync() (_ kyvernov1.GenerateType, sync bool) {
 	if !r.HasGenerate() {
 		return
 	}
-
-	if r.Generation.Clone.Name != "" {
-		clone = true
-	}
-
-	sync = r.Generation.Synchronize
-	return
+	return r.Generation.GetTypeAndSync()
 }
 
 // ValidateRuleType checks only one type of rule is defined per rule
@@ -158,27 +149,36 @@ func (r *Rule) ValidateMatchExcludeConflict(path *field.Path) (errs field.ErrorL
 	if len(r.MatchResources.Any) > 0 && len(r.ExcludeResources.Any) > 0 {
 		for _, rmr := range r.MatchResources.Any {
 			for _, rer := range r.ExcludeResources.Any {
-				if reflect.DeepEqual(rmr, rer) {
+				if datautils.DeepEqual(rmr, rer) {
 					return append(errs, field.Invalid(path, r, "Rule is matching an empty set"))
 				}
 			}
 		}
 		return errs
 	}
-	if reflect.DeepEqual(r.ExcludeResources.Any, r.MatchResources.Any) {
+	if datautils.DeepEqual(r.ExcludeResources.Any, r.MatchResources.Any) {
 		return errs
 	}
-	if reflect.DeepEqual(r.ExcludeResources.All, r.MatchResources.All) {
+	if datautils.DeepEqual(r.ExcludeResources.All, r.MatchResources.All) {
 		return errs
 	}
 	return append(errs, field.Invalid(path, r, "Rule is matching an empty set"))
 }
 
+func (r *Rule) ValidateGenerate(path *field.Path, namespaced bool, policyNamespace string, clusterResources sets.Set[string]) (errs field.ErrorList) {
+	if !r.HasGenerate() {
+		return nil
+	}
+
+	return r.Generation.Validate(path, namespaced, policyNamespace, clusterResources)
+}
+
 // Validate implements programmatic validation
-func (r *Rule) Validate(path *field.Path, namespaced bool, clusterResources sets.Set[string]) (errs field.ErrorList) {
+func (r *Rule) Validate(path *field.Path, namespaced bool, policyNamespace string, clusterResources sets.Set[string]) (errs field.ErrorList) {
 	errs = append(errs, r.ValidateRuleType(path)...)
 	errs = append(errs, r.ValidateMatchExcludeConflict(path)...)
 	errs = append(errs, r.MatchResources.Validate(path.Child("match"), namespaced, clusterResources)...)
 	errs = append(errs, r.ExcludeResources.Validate(path.Child("exclude"), namespaced, clusterResources)...)
+	errs = append(errs, r.ValidateGenerate(path, namespaced, policyNamespace, clusterResources)...)
 	return errs
 }

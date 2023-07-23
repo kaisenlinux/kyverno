@@ -2,7 +2,6 @@ package background
 
 import (
 	"context"
-	"reflect"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -17,11 +16,11 @@ import (
 	"github.com/kyverno/kyverno/pkg/controllers"
 	"github.com/kyverno/kyverno/pkg/controllers/report/resource"
 	"github.com/kyverno/kyverno/pkg/controllers/report/utils"
-	"github.com/kyverno/kyverno/pkg/engine"
-	"github.com/kyverno/kyverno/pkg/engine/context/resolvers"
+	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
+	"github.com/kyverno/kyverno/pkg/engine/jmespath"
 	"github.com/kyverno/kyverno/pkg/event"
-	"github.com/kyverno/kyverno/pkg/registryclient"
 	controllerutils "github.com/kyverno/kyverno/pkg/utils/controller"
+	datautils "github.com/kyverno/kyverno/pkg/utils/data"
 	reportutils "github.com/kyverno/kyverno/pkg/utils/report"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -48,7 +47,7 @@ type controller struct {
 	// clients
 	client        dclient.Interface
 	kyvernoClient versioned.Interface
-	rclient       registryclient.Client
+	engine        engineapi.Engine
 
 	// listers
 	polLister      kyvernov1listers.PolicyLister
@@ -56,55 +55,52 @@ type controller struct {
 	bgscanrLister  cache.GenericLister
 	cbgscanrLister cache.GenericLister
 	nsLister       corev1listers.NamespaceLister
-	polexLister    engine.PolicyExceptionLister
 
 	// queue
 	queue workqueue.RateLimitingInterface
 
 	// cache
-	metadataCache          resource.MetadataCache
-	informerCacheResolvers resolvers.ConfigmapResolver
-	forceDelay             time.Duration
+	metadataCache resource.MetadataCache
+	forceDelay    time.Duration
 
 	// config
 	config   config.Configuration
+	jp       jmespath.Interface
 	eventGen event.Interface
 }
 
 func NewController(
 	client dclient.Interface,
 	kyvernoClient versioned.Interface,
-	rclient registryclient.Client,
+	engine engineapi.Engine,
 	metadataFactory metadatainformers.SharedInformerFactory,
 	polInformer kyvernov1informers.PolicyInformer,
 	cpolInformer kyvernov1informers.ClusterPolicyInformer,
 	nsInformer corev1informers.NamespaceInformer,
-	polexLister engine.PolicyExceptionLister,
 	metadataCache resource.MetadataCache,
-	informerCacheResolvers resolvers.ConfigmapResolver,
 	forceDelay time.Duration,
 	config config.Configuration,
+	jp jmespath.Interface,
 	eventGen event.Interface,
 ) controllers.Controller {
 	bgscanr := metadataFactory.ForResource(kyvernov1alpha2.SchemeGroupVersion.WithResource("backgroundscanreports"))
 	cbgscanr := metadataFactory.ForResource(kyvernov1alpha2.SchemeGroupVersion.WithResource("clusterbackgroundscanreports"))
 	queue := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), ControllerName)
 	c := controller{
-		client:                 client,
-		kyvernoClient:          kyvernoClient,
-		rclient:                rclient,
-		polLister:              polInformer.Lister(),
-		cpolLister:             cpolInformer.Lister(),
-		bgscanrLister:          bgscanr.Lister(),
-		cbgscanrLister:         cbgscanr.Lister(),
-		nsLister:               nsInformer.Lister(),
-		polexLister:            polexLister,
-		queue:                  queue,
-		metadataCache:          metadataCache,
-		informerCacheResolvers: informerCacheResolvers,
-		forceDelay:             forceDelay,
-		config:                 config,
-		eventGen:               eventGen,
+		client:         client,
+		kyvernoClient:  kyvernoClient,
+		engine:         engine,
+		polLister:      polInformer.Lister(),
+		cpolLister:     cpolInformer.Lister(),
+		bgscanrLister:  bgscanr.Lister(),
+		cbgscanrLister: cbgscanr.Lister(),
+		nsLister:       nsInformer.Lister(),
+		queue:          queue,
+		metadataCache:  metadataCache,
+		forceDelay:     forceDelay,
+		config:         config,
+		jp:             jp,
+		eventGen:       eventGen,
 	}
 	controllerutils.AddDefaultEventHandlers(logger, bgscanr.Informer(), queue)
 	controllerutils.AddDefaultEventHandlers(logger, cbgscanr.Informer(), queue)
@@ -237,7 +233,7 @@ func (c *controller) needsReconcile(namespace, name, hash string, backgroundPoli
 			actual[key] = value
 		}
 	}
-	if !reflect.DeepEqual(expected, actual) {
+	if !datautils.DeepEqual(expected, actual) {
 		return true, false, nil
 	}
 	// no need to reconcile
@@ -309,13 +305,13 @@ func (c *controller) reconcileReport(
 	// calculate necessary results
 	for _, policy := range backgroundPolicies {
 		if full || actual[reportutils.PolicyLabel(policy)] != policy.GetResourceVersion() {
-			scanner := utils.NewScanner(logger, c.client, c.rclient, c.informerCacheResolvers, c.polexLister, c.config)
+			scanner := utils.NewScanner(logger, c.engine, c.config, c.jp)
 			for _, result := range scanner.ScanResource(ctx, *target, nsLabels, policy) {
 				if result.Error != nil {
 					return result.Error
-				} else {
-					ruleResults = append(ruleResults, reportutils.EngineResponseToReportResults(result.EngineResponse)...)
-					utils.GenerateEvents(logger, c.eventGen, c.config, result.EngineResponse)
+				} else if result.EngineResponse != nil {
+					ruleResults = append(ruleResults, reportutils.EngineResponseToReportResults(*result.EngineResponse)...)
+					utils.GenerateEvents(logger, c.eventGen, c.config, *result.EngineResponse)
 				}
 			}
 		}

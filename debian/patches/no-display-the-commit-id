@@ -1,7 +1,7 @@
 Author: Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>
 
---- kyverno-1.9.1.orig/cmd/cli/kubectl-kyverno/version/command.go
-+++ kyverno-1.9.1/cmd/cli/kubectl-kyverno/version/command.go
+--- kyverno-1.10.1.orig/cmd/cli/kubectl-kyverno/version/command.go
++++ kyverno-1.10.1/cmd/cli/kubectl-kyverno/version/command.go
 @@ -15,7 +15,6 @@ func Command() *cobra.Command {
  		RunE: func(cmd *cobra.Command, args []string) error {
  			fmt.Printf("Version: %s\n", version.BuildVersion)

@@ -3,26 +3,24 @@ package validation
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/go-logr/logr"
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
 	"github.com/kyverno/kyverno/pkg/client/clientset/versioned"
+	"github.com/kyverno/kyverno/pkg/config"
 	"github.com/kyverno/kyverno/pkg/engine"
-	"github.com/kyverno/kyverno/pkg/engine/response"
+	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	"github.com/kyverno/kyverno/pkg/event"
 	"github.com/kyverno/kyverno/pkg/metrics"
 	"github.com/kyverno/kyverno/pkg/policycache"
-	"github.com/kyverno/kyverno/pkg/registryclient"
 	"github.com/kyverno/kyverno/pkg/tracing"
 	admissionutils "github.com/kyverno/kyverno/pkg/utils/admission"
-	controllerutils "github.com/kyverno/kyverno/pkg/utils/controller"
 	reportutils "github.com/kyverno/kyverno/pkg/utils/report"
+	"github.com/kyverno/kyverno/pkg/webhooks/handlers"
 	webhookutils "github.com/kyverno/kyverno/pkg/webhooks/utils"
 	"go.opentelemetry.io/otel/trace"
 	admissionv1 "k8s.io/api/admission/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -31,66 +29,56 @@ type ValidationHandler interface {
 	// HandleValidation handles validating webhook admission request
 	// If there are no errors in validating rule we apply generation rules
 	// patchedResource is the (resource + patches) after applying mutation rules
-	HandleValidation(context.Context, *admissionv1.AdmissionRequest, []kyvernov1.PolicyInterface, *engine.PolicyContext, time.Time) (bool, string, []string)
+	HandleValidation(context.Context, handlers.AdmissionRequest, []kyvernov1.PolicyInterface, *engine.PolicyContext, time.Time) (bool, string, []string)
 }
 
 func NewValidationHandler(
 	log logr.Logger,
 	kyvernoClient versioned.Interface,
-	rclient registryclient.Client,
+	engine engineapi.Engine,
 	pCache policycache.Cache,
 	pcBuilder webhookutils.PolicyContextBuilder,
 	eventGen event.Interface,
 	admissionReports bool,
 	metrics metrics.MetricsConfigManager,
+	cfg config.Configuration,
 ) ValidationHandler {
 	return &validationHandler{
 		log:              log,
 		kyvernoClient:    kyvernoClient,
-		rclient:          rclient,
+		engine:           engine,
 		pCache:           pCache,
 		pcBuilder:        pcBuilder,
 		eventGen:         eventGen,
 		admissionReports: admissionReports,
 		metrics:          metrics,
+		cfg:              cfg,
 	}
 }
 
 type validationHandler struct {
 	log              logr.Logger
 	kyvernoClient    versioned.Interface
-	rclient          registryclient.Client
+	engine           engineapi.Engine
 	pCache           policycache.Cache
 	pcBuilder        webhookutils.PolicyContextBuilder
 	eventGen         event.Interface
 	admissionReports bool
 	metrics          metrics.MetricsConfigManager
+	cfg              config.Configuration
 }
 
 func (v *validationHandler) HandleValidation(
 	ctx context.Context,
-	request *admissionv1.AdmissionRequest,
+	request handlers.AdmissionRequest,
 	policies []kyvernov1.PolicyInterface,
 	policyContext *engine.PolicyContext,
 	admissionRequestTimestamp time.Time,
 ) (bool, string, []string) {
-	resourceName := admissionutils.GetResourceName(request)
+	resourceName := admissionutils.GetResourceName(request.AdmissionRequest)
 	logger := v.log.WithValues("action", "validate", "resource", resourceName, "operation", request.Operation, "gvk", request.Kind)
 
-	var deletionTimeStamp *metav1.Time
-	if reflect.DeepEqual(policyContext.NewResource(), unstructured.Unstructured{}) {
-		resource := policyContext.NewResource()
-		deletionTimeStamp = resource.GetDeletionTimestamp()
-	} else {
-		resource := policyContext.OldResource()
-		deletionTimeStamp = resource.GetDeletionTimestamp()
-	}
-
-	if deletionTimeStamp != nil && request.Operation == admissionv1.Update {
-		return true, "", nil
-	}
-
-	var engineResponses []*response.EngineResponse
+	var engineResponses []engineapi.EngineResponse
 	failurePolicy := kyvernov1.Ignore
 	for _, policy := range policies {
 		tracing.ChildSpan(
@@ -103,15 +91,12 @@ func (v *validationHandler) HandleValidation(
 					failurePolicy = kyvernov1.Fail
 				}
 
-				engineResponse := engine.Validate(ctx, v.rclient, policyContext)
+				engineResponse := v.engine.Validate(ctx, policyContext)
 				if engineResponse.IsNil() {
 					// we get an empty response if old and new resources created the same response
 					// allow updates if resource update doesnt change the policy evaluation
 					return
 				}
-
-				go webhookutils.RegisterPolicyResultsMetricValidation(ctx, logger, v.metrics, string(request.Operation), policyContext.Policy(), *engineResponse)
-				go webhookutils.RegisterPolicyExecutionDurationMetricValidate(ctx, logger, v.metrics, string(request.Operation), policyContext.Policy(), *engineResponse)
 
 				engineResponses = append(engineResponses, engineResponse)
 				if !engineResponse.IsSuccessful() {
@@ -127,10 +112,8 @@ func (v *validationHandler) HandleValidation(
 	}
 
 	blocked := webhookutils.BlockRequest(engineResponses, failurePolicy, logger)
-	if deletionTimeStamp == nil {
-		events := webhookutils.GenerateEvents(engineResponses, blocked)
-		v.eventGen.Add(events...)
-	}
+	events := webhookutils.GenerateEvents(engineResponses, blocked)
+	v.eventGen.Add(events...)
 
 	if blocked {
 		logger.V(4).Info("admission request blocked")
@@ -146,15 +129,16 @@ func (v *validationHandler) HandleValidation(
 func (v *validationHandler) buildAuditResponses(
 	ctx context.Context,
 	resource unstructured.Unstructured,
-	request *admissionv1.AdmissionRequest,
+	request handlers.AdmissionRequest,
 	namespaceLabels map[string]string,
-) ([]*response.EngineResponse, error) {
-	policies := v.pCache.GetPolicies(policycache.ValidateAudit, request.Kind.Kind, request.Namespace)
-	policyContext, err := v.pcBuilder.Build(request)
+) ([]engineapi.EngineResponse, error) {
+	gvr := schema.GroupVersionResource(request.Resource)
+	policies := v.pCache.GetPolicies(policycache.ValidateAudit, gvr, request.SubResource, request.Namespace)
+	policyContext, err := v.pcBuilder.Build(request.AdmissionRequest, request.Roles, request.ClusterRoles, request.GroupVersionKind)
 	if err != nil {
 		return nil, err
 	}
-	var responses []*response.EngineResponse
+	var responses []engineapi.EngineResponse
 	for _, policy := range policies {
 		tracing.ChildSpan(
 			ctx,
@@ -162,10 +146,8 @@ func (v *validationHandler) buildAuditResponses(
 			fmt.Sprintf("POLICY %s/%s", policy.GetNamespace(), policy.GetName()),
 			func(ctx context.Context, span trace.Span) {
 				policyContext := policyContext.WithPolicy(policy).WithNamespaceLabels(namespaceLabels)
-				response := engine.Validate(ctx, v.rclient, policyContext)
+				response := v.engine.Validate(ctx, policyContext)
 				responses = append(responses, response)
-				go webhookutils.RegisterPolicyResultsMetricValidation(ctx, v.log, v.metrics, string(request.Operation), policyContext.Policy(), *response)
-				go webhookutils.RegisterPolicyExecutionDurationMetricValidate(ctx, v.log, v.metrics, string(request.Operation), policyContext.Policy(), *response)
 			},
 		)
 	}
@@ -175,12 +157,12 @@ func (v *validationHandler) buildAuditResponses(
 func (v *validationHandler) handleAudit(
 	ctx context.Context,
 	resource unstructured.Unstructured,
-	request *admissionv1.AdmissionRequest,
+	request handlers.AdmissionRequest,
 	namespaceLabels map[string]string,
-	engineResponses ...*response.EngineResponse,
+	engineResponses ...engineapi.EngineResponse,
 ) {
 	createReport := v.admissionReports
-	if request.DryRun != nil && *request.DryRun {
+	if admissionutils.IsDryRun(request.AdmissionRequest) {
 		createReport = false
 	}
 	// we don't need reports for deletions
@@ -189,6 +171,10 @@ func (v *validationHandler) handleAudit(
 	}
 	// check if the resource supports reporting
 	if !reportutils.IsGvkSupported(schema.GroupVersionKind(request.Kind)) {
+		createReport = false
+	}
+	// if the underlying resource has no UID don't create a report
+	if resource.GetUID() == "" {
 		createReport = false
 	}
 	tracing.Span(
@@ -200,14 +186,11 @@ func (v *validationHandler) handleAudit(
 			if err != nil {
 				v.log.Error(err, "failed to build audit responses")
 			}
+			events := webhookutils.GenerateEvents(responses, false)
+			v.eventGen.Add(events...)
 			if createReport {
 				responses = append(responses, engineResponses...)
-				report := reportutils.BuildAdmissionReport(resource, request, request.Kind, responses...)
-				// if it's not a creation, the resource already exists, we can set the owner
-				if request.Operation != admissionv1.Create {
-					gv := metav1.GroupVersion{Group: request.Kind.Group, Version: request.Kind.Version}
-					controllerutils.SetOwner(report, gv.String(), request.Kind.Kind, resource.GetName(), resource.GetUID())
-				}
+				report := reportutils.BuildAdmissionReport(resource, request.AdmissionRequest, responses...)
 				if len(report.GetResults()) > 0 {
 					_, err = reportutils.CreateReport(ctx, report, v.kyvernoClient)
 					if err != nil {
