@@ -6,8 +6,6 @@ import (
 
 	kyverno "github.com/kyverno/kyverno/api/kyverno/v1"
 	preport "github.com/kyverno/kyverno/api/policyreport/v1alpha2"
-	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/utils/common"
-	kyvCommon "github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/utils/common"
 	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	"gotest.tools/assert"
 	v1 "k8s.io/api/core/v1"
@@ -20,7 +18,9 @@ var rawPolicy = []byte(`
 	"metadata": {
 	  "name": "pod-requirements",
 	  "annotations": {
-		"pod-policies.kyverno.io/autogen-controllers": "none"
+		"pod-policies.kyverno.io/autogen-controllers": "none",
+		"policies.kyverno.io/severity": "medium",
+		"policies.kyverno.io/category": "Pod Security Standards (Restricted)"
 	  }
 	},
 	"spec": {
@@ -84,8 +84,6 @@ var rawPolicy = []byte(`
 `)
 
 func Test_buildPolicyReports(t *testing.T) {
-	rc := &kyvCommon.ResultCounts{}
-	var pvInfos []common.Info
 	var policy kyverno.ClusterPolicy
 	err := json.Unmarshal(rawPolicy, &policy)
 	assert.NilError(t, err)
@@ -106,10 +104,7 @@ func Test_buildPolicyReports(t *testing.T) {
 		),
 	)
 
-	info := kyvCommon.ProcessValidateEngineResponse(&policy, &er, "", rc, true, false)
-	pvInfos = append(pvInfos, info)
-
-	reports := buildPolicyReports(pvInfos)
+	reports := buildPolicyReports(false, er)
 	assert.Assert(t, len(reports) == 1, len(reports))
 
 	for _, report := range reports {
@@ -120,6 +115,8 @@ func Test_buildPolicyReports(t *testing.T) {
 			assert.Assert(t,
 				report.UnstructuredContent()["summary"].(map[string]interface{})[preport.StatusPass].(int64) == 1,
 				report.UnstructuredContent()["summary"].(map[string]interface{})[preport.StatusPass].(int64))
+			assert.Equal(t, report.UnstructuredContent()["results"].([]interface{})[0].(map[string]interface{})["severity"], "medium")
+			assert.Equal(t, report.UnstructuredContent()["results"].([]interface{})[0].(map[string]interface{})["category"], "Pod Security Standards (Restricted)")
 		} else {
 			assert.Assert(t, report.GetName() == "policyreport-ns-default")
 			assert.Assert(t, report.GetKind() == "PolicyReport")
@@ -132,8 +129,6 @@ func Test_buildPolicyReports(t *testing.T) {
 }
 
 func Test_buildPolicyResults(t *testing.T) {
-	rc := &kyvCommon.ResultCounts{}
-	var pvInfos []common.Info
 	var policy kyverno.ClusterPolicy
 	err := json.Unmarshal(rawPolicy, &policy)
 	assert.NilError(t, err)
@@ -153,10 +148,7 @@ func Test_buildPolicyResults(t *testing.T) {
 		),
 	)
 
-	info := kyvCommon.ProcessValidateEngineResponse(&policy, &er, "", rc, true, false)
-	pvInfos = append(pvInfos, info)
-
-	results := buildPolicyResults(pvInfos)
+	results := buildPolicyResults(false, er)
 
 	for _, result := range results {
 		assert.Assert(t, len(result) == 2, len(result))

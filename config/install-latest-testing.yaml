@@ -35455,6 +35455,7 @@ spec:
             - --otelConfig=prometheus
             - --metricsPort=8000
             - --admissionReports=true
+            - --policyReports=true
             - --backgroundScan=true
             - --backgroundScanWorkers=2
             - --backgroundScanInterval=1h
@@ -35511,6 +35512,7 @@ metadata:
   name: kyverno-cleanup-admission-reports
   namespace: kyverno
   labels:
+    app.kubernetes.io/component: cleanup
     app.kubernetes.io/instance: kyverno
     app.kubernetes.io/part-of: kyverno
     app.kubernetes.io/version: latest
@@ -35558,6 +35560,7 @@ metadata:
   name: kyverno-cleanup-cluster-admission-reports
   namespace: kyverno
   labels:
+    app.kubernetes.io/component: cleanup
     app.kubernetes.io/instance: kyverno
     app.kubernetes.io/part-of: kyverno
     app.kubernetes.io/version: latest

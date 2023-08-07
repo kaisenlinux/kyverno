@@ -14,7 +14,6 @@ override_dh_auto_build:
 override_dh_auto_test:
 
 override_dh_auto_install:
-	dh_auto_install -- --no-source
 	$(CURDIR)/cmd/cli/kubectl-kyverno/kubectl-kyverno completion bash > $(CURDIR)/debian/kyverno/usr/share/bash-completion/completions/kyverno
 	$(CURDIR)/cmd/cli/kubectl-kyverno/kubectl-kyverno completion zsh > $(CURDIR)/debian/kyverno/usr/share/zsh/vendor-completions/_kyverno
 	install -p -m 0755 $(CURDIR)/cmd/cli/kubectl-kyverno/kubectl-kyverno $(CURDIR)/debian/kyverno/usr/bin/kyverno

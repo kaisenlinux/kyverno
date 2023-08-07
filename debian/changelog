@@ -1,3 +1,11 @@
+kyverno (1.10.2-1kaisen) kaisen-packages; urgency=medium
+
+  * Import the 1.10.2 version
+  * Update the static-version-numver quilt patch
+  * Remove golang-go as package dependancy
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Mon, 07 Aug 2023 20:15:29 +0100
+
 kyverno (1.10.1-1kaisen) kaisen-packages; urgency=medium
 
   * Import the 1.10.1 version
