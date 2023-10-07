@@ -1,16 +1,16 @@
 Author: Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>
 
---- kyverno-1.10.2.orig/Makefile
-+++ kyverno-1.10.2/Makefile
+--- kyverno-1.10.3.orig/Makefile
++++ kyverno-1.10.3/Makefile
 @@ -144,9 +144,9 @@ BACKGROUND_BIN := $(BACKGROUND_DIR)/back
  PACKAGE        ?= github.com/kyverno/kyverno
  CGO_ENABLED    ?= 0
  ifdef VERSION
 -LD_FLAGS       := "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=$(VERSION) -X $(PACKAGE)/pkg/version.BuildHash=$(GIT_SHA) -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
-+LD_FLAGS       := "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=1.10.2 -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
++LD_FLAGS       := "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=1.10.3 -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
  else
 -LD_FLAGS       := "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=$(GIT_SHA) -X $(PACKAGE)/pkg/version.BuildHash=$(GIT_SHA) -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
-+LD_FLAGS       := "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=1.10.2 -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
++LD_FLAGS       := "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=1.10.3 -X $(PACKAGE)/pkg/version.BuildTime=$(TIMESTAMP)"
  endif
  
  .PHONY: fmt
