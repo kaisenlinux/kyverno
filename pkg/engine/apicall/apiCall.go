@@ -13,7 +13,6 @@ import (
 
 	"github.com/go-logr/logr"
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
-	"github.com/kyverno/kyverno/pkg/clients/dclient"
 	enginecontext "github.com/kyverno/kyverno/pkg/engine/context"
 	"github.com/kyverno/kyverno/pkg/engine/jmespath"
 	"github.com/kyverno/kyverno/pkg/engine/variables"
@@ -26,7 +25,8 @@ type apiCall struct {
 	jp      jmespath.Interface
 	entry   kyvernov1.ContextEntry
 	jsonCtx enginecontext.Interface
-	client  dclient.Interface
+	client  ClientInterface
+	config  APICallConfiguration
 }
 
 func New(
@@ -34,7 +34,8 @@ func New(
 	jp jmespath.Interface,
 	entry kyvernov1.ContextEntry,
 	jsonCtx enginecontext.Interface,
-	client dclient.Interface,
+	client ClientInterface,
+	apiCallConfig APICallConfiguration,
 ) (*apiCall, error) {
 	if entry.APICall == nil {
 		return nil, fmt.Errorf("missing APICall in context entry %v", entry)
@@ -45,6 +46,7 @@ func New(
 		entry:   entry,
 		jsonCtx: jsonCtx,
 		client:  client,
+		config:  apiCallConfig,
 	}, nil
 }
 
@@ -67,7 +69,7 @@ func (a *apiCall) Fetch(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to substitute variables in context entry %s %s: %v", a.entry.Name, a.entry.APICall.URLPath, err)
 	}
-	data, err := a.execute(ctx, call)
+	data, err := a.Execute(ctx, call)
 	if err != nil {
 		return nil, err
 	}
@@ -82,11 +84,10 @@ func (a *apiCall) Store(data []byte) ([]byte, error) {
 	return results, nil
 }
 
-func (a *apiCall) execute(ctx context.Context, call *kyvernov1.APICall) ([]byte, error) {
+func (a *apiCall) Execute(ctx context.Context, call *kyvernov1.ContextAPICall) ([]byte, error) {
 	if call.URLPath != "" {
 		return a.executeK8sAPICall(ctx, call.URLPath, call.Method, call.Data)
 	}
-
 	return a.executeServiceCall(ctx, call)
 }
 
@@ -95,17 +96,15 @@ func (a *apiCall) executeK8sAPICall(ctx context.Context, path string, method kyv
 	if err != nil {
 		return nil, err
 	}
-
 	jsonData, err := a.client.RawAbsPath(ctx, path, string(method), requestData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to %v resource with raw url\n: %s: %v", method, path, err)
 	}
-
 	a.logger.V(4).Info("executed APICall", "name", a.entry.Name, "path", path, "method", method, "len", len(jsonData))
 	return jsonData, nil
 }
 
-func (a *apiCall) executeServiceCall(ctx context.Context, apiCall *kyvernov1.APICall) ([]byte, error) {
+func (a *apiCall) executeServiceCall(ctx context.Context, apiCall *kyvernov1.ContextAPICall) ([]byte, error) {
 	if apiCall.Service == nil {
 		return nil, fmt.Errorf("missing service for APICall %s", a.entry.Name)
 	}
@@ -124,6 +123,12 @@ func (a *apiCall) executeServiceCall(ctx context.Context, apiCall *kyvernov1.API
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute HTTP request for APICall %s: %w", a.entry.Name, err)
 	}
+	defer resp.Body.Close()
+	var w http.ResponseWriter
+
+	if a.config.maxAPICallResponseLength != 0 {
+		resp.Body = http.MaxBytesReader(w, resp.Body, a.config.maxAPICallResponseLength)
+	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, err := io.ReadAll(resp.Body)
@@ -134,17 +139,20 @@ func (a *apiCall) executeServiceCall(ctx context.Context, apiCall *kyvernov1.API
 		return nil, fmt.Errorf("HTTP %s", resp.Status)
 	}
 
-	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read data from APICall %s: %w", a.entry.Name, err)
+		if _, ok := err.(*http.MaxBytesError); ok {
+			return nil, fmt.Errorf("response length must be less than max allowed response length of %d.", a.config.maxAPICallResponseLength)
+		} else {
+			return nil, fmt.Errorf("failed to read data from APICall %s: %w", a.entry.Name, err)
+		}
 	}
 
 	a.logger.Info("executed service APICall", "name", a.entry.Name, "len", len(body))
 	return body, nil
 }
 
-func (a *apiCall) buildHTTPRequest(ctx context.Context, apiCall *kyvernov1.APICall) (req *http.Request, err error) {
+func (a *apiCall) buildHTTPRequest(ctx context.Context, apiCall *kyvernov1.ContextAPICall) (req *http.Request, err error) {
 	if apiCall.Service == nil {
 		return nil, fmt.Errorf("missing service")
 	}

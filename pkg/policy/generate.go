@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/kyverno/kyverno/api/kyverno"
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
 	kyvernov1beta1 "github.com/kyverno/kyverno/api/kyverno/v1beta1"
 	"github.com/kyverno/kyverno/pkg/autogen"
@@ -63,10 +64,10 @@ func (pc *policyController) handleGenerateForExisting(policy kyvernov1.PolicyInt
 
 func (pc *policyController) createURForDownstreamDeletion(policy kyvernov1.PolicyInterface) error {
 	var errs []error
-	rules := autogen.ComputeRules(policy)
+	rules := autogen.ComputeRules(policy, "")
 	for _, r := range rules {
-		generateType, sync := r.GetGenerateTypeAndSync()
-		if sync && (generateType == kyvernov1.Data) {
+		generateType, sync, orphanDownstreamOnPolicyDelete := r.GetTypeAndSyncAndOrphanDownstream()
+		if sync && (generateType == kyvernov1.Data) && !orphanDownstreamOnPolicyDelete {
 			if err := pc.syncDataPolicyChanges(policy, true); err != nil {
 				errs = append(errs, err)
 			}
@@ -97,10 +98,10 @@ func (pc *policyController) syncDataRulechanges(policy kyvernov1.PolicyInterface
 		common.GeneratePolicyLabel:          policy.GetName(),
 		common.GeneratePolicyNamespaceLabel: policy.GetNamespace(),
 		common.GenerateRuleLabel:            rule.Name,
-		kyvernov1.LabelAppManagedBy:         kyvernov1.ValueKyvernoApp,
+		kyverno.LabelAppManagedBy:           kyverno.ValueKyvernoApp,
 	}
 
-	downstreams, err := generateutils.FindDownstream(pc.client, rule.Generation.GetAPIVersion(), rule.Generation.GetKind(), labels)
+	downstreams, err := common.FindDownstream(pc.client, rule.Generation.GetAPIVersion(), rule.Generation.GetKind(), labels)
 	if err != nil {
 		return err
 	}

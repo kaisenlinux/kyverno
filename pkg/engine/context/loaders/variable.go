@@ -8,6 +8,7 @@ import (
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
 	enginecontext "github.com/kyverno/kyverno/pkg/engine/context"
 	"github.com/kyverno/kyverno/pkg/engine/jmespath"
+	"github.com/kyverno/kyverno/pkg/engine/jsonutils"
 	"github.com/kyverno/kyverno/pkg/engine/variables"
 )
 
@@ -52,13 +53,17 @@ func (vl *variableLoader) loadVariable() (err error) {
 		if err != nil {
 			return fmt.Errorf("failed to substitute variables in context entry %s %s: %v", entry.Name, entry.Variable.JMESPath, err)
 		}
-		path = jp.(string)
+		var ok bool
+		path, ok = jp.(string)
+		if !ok {
+			return fmt.Errorf("jmespath value must be a string %s %s: %v", entry.Name, entry.Variable.JMESPath, err)
+		}
 		logger.V(4).Info("evaluated jmespath", "variable name", entry.Name, "jmespath", path)
 	}
 
 	var defaultValue interface{} = nil
 	if entry.Variable.Default != nil {
-		value, err := variables.DocumentToUntyped(entry.Variable.Default)
+		value, err := jsonutils.DocumentToUntyped(entry.Variable.Default)
 		if err != nil {
 			return fmt.Errorf("invalid default for variable %s", entry.Name)
 		}
@@ -71,7 +76,7 @@ func (vl *variableLoader) loadVariable() (err error) {
 
 	var output interface{} = defaultValue
 	if entry.Variable.Value != nil {
-		value, _ := variables.DocumentToUntyped(entry.Variable.Value)
+		value, _ := jsonutils.DocumentToUntyped(entry.Variable.Value)
 		variable, err := variables.SubstituteAll(logger, ctx, value)
 		if err != nil {
 			return fmt.Errorf("failed to substitute variables in context entry %s %s: %v", entry.Name, entry.Variable.Value, err)

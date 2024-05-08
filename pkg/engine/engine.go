@@ -6,9 +6,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	gojmespath "github.com/jmespath/go-jmespath"
+	gojmespath "github.com/kyverno/go-jmespath"
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
-	"github.com/kyverno/kyverno/pkg/clients/dclient"
 	"github.com/kyverno/kyverno/pkg/config"
 	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	enginecontext "github.com/kyverno/kyverno/pkg/engine/context"
@@ -16,13 +15,13 @@ import (
 	"github.com/kyverno/kyverno/pkg/engine/internal"
 	"github.com/kyverno/kyverno/pkg/engine/jmespath"
 	engineutils "github.com/kyverno/kyverno/pkg/engine/utils"
+	"github.com/kyverno/kyverno/pkg/imageverifycache"
 	"github.com/kyverno/kyverno/pkg/logging"
 	"github.com/kyverno/kyverno/pkg/metrics"
-	"github.com/kyverno/kyverno/pkg/registryclient"
 	"github.com/kyverno/kyverno/pkg/tracing"
 	stringutils "github.com/kyverno/kyverno/pkg/utils/strings"
-	"go.opentelemetry.io/otel/metric/global"
-	"go.opentelemetry.io/otel/metric/instrument"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -31,13 +30,14 @@ type engine struct {
 	configuration        config.Configuration
 	metricsConfiguration config.MetricsConfiguration
 	jp                   jmespath.Interface
-	client               dclient.Interface
-	rclient              registryclient.Client
+	client               engineapi.Client
+	rclientFactory       engineapi.RegistryClientFactory
+	ivCache              imageverifycache.Client
 	contextLoader        engineapi.ContextLoaderFactory
 	exceptionSelector    engineapi.PolicyExceptionSelector
 	// metrics
-	resultCounter     instrument.Int64Counter
-	durationHistogram instrument.Float64Histogram
+	resultCounter     metric.Int64Counter
+	durationHistogram metric.Float64Histogram
 }
 
 type handlerFactory = func() (handlers.Handler, error)
@@ -46,22 +46,23 @@ func NewEngine(
 	configuration config.Configuration,
 	metricsConfiguration config.MetricsConfiguration,
 	jp jmespath.Interface,
-	client dclient.Interface,
-	rclient registryclient.Client,
+	client engineapi.Client,
+	rclientFactory engineapi.RegistryClientFactory,
+	ivCache imageverifycache.Client,
 	contextLoader engineapi.ContextLoaderFactory,
 	exceptionSelector engineapi.PolicyExceptionSelector,
 ) engineapi.Engine {
-	meter := global.MeterProvider().Meter(metrics.MeterName)
+	meter := otel.GetMeterProvider().Meter(metrics.MeterName)
 	resultCounter, err := meter.Int64Counter(
 		"kyverno_policy_results",
-		instrument.WithDescription("can be used to track the results associated with the policies applied in the user's cluster, at the level from rule to policy to admission requests"),
+		metric.WithDescription("can be used to track the results associated with the policies applied in the user's cluster, at the level from rule to policy to admission requests"),
 	)
 	if err != nil {
 		logging.Error(err, "failed to register metric kyverno_policy_results")
 	}
 	durationHistogram, err := meter.Float64Histogram(
 		"kyverno_policy_execution_duration_seconds",
-		instrument.WithDescription("can be used to track the latencies (in seconds) associated with the execution/processing of the individual rules under Kyverno policies whenever they evaluate incoming resource requests"),
+		metric.WithDescription("can be used to track the latencies (in seconds) associated with the execution/processing of the individual rules under Kyverno policies whenever they evaluate incoming resource requests"),
 	)
 	if err != nil {
 		logging.Error(err, "failed to register metric kyverno_policy_execution_duration_seconds")
@@ -71,7 +72,8 @@ func NewEngine(
 		metricsConfiguration: metricsConfiguration,
 		jp:                   jp,
 		client:               client,
-		rclient:              rclient,
+		rclientFactory:       rclientFactory,
+		ivCache:              ivCache,
 		contextLoader:        contextLoader,
 		exceptionSelector:    exceptionSelector,
 		resultCounter:        resultCounter,
@@ -86,7 +88,7 @@ func (e *engine) Validate(
 	startTime := time.Now()
 	response := engineapi.NewEngineResponseFromPolicyContext(policyContext)
 	logger := internal.LoggerWithPolicyContext(logging.WithName("engine.validate"), policyContext)
-	if internal.MatchPolicyContext(logger, policyContext, e.configuration) {
+	if internal.MatchPolicyContext(logger, e.client, policyContext, e.configuration) {
 		policyResponse := e.validate(ctx, logger, policyContext)
 		response = response.WithPolicyResponse(policyResponse)
 	}
@@ -102,7 +104,7 @@ func (e *engine) Mutate(
 	startTime := time.Now()
 	response := engineapi.NewEngineResponseFromPolicyContext(policyContext)
 	logger := internal.LoggerWithPolicyContext(logging.WithName("engine.mutate"), policyContext)
-	if internal.MatchPolicyContext(logger, policyContext, e.configuration) {
+	if internal.MatchPolicyContext(logger, e.client, policyContext, e.configuration) {
 		policyResponse, patchedResource := e.mutate(ctx, logger, policyContext)
 		response = response.
 			WithPolicyResponse(policyResponse).
@@ -120,7 +122,7 @@ func (e *engine) Generate(
 	startTime := time.Now()
 	response := engineapi.NewEngineResponseFromPolicyContext(policyContext)
 	logger := internal.LoggerWithPolicyContext(logging.WithName("engine.generate"), policyContext)
-	if internal.MatchPolicyContext(logger, policyContext, e.configuration) {
+	if internal.MatchPolicyContext(logger, e.client, policyContext, e.configuration) {
 		policyResponse := e.generateResponse(ctx, logger, policyContext)
 		response = response.WithPolicyResponse(policyResponse)
 	}
@@ -137,9 +139,11 @@ func (e *engine) VerifyAndPatchImages(
 	response := engineapi.NewEngineResponseFromPolicyContext(policyContext)
 	ivm := engineapi.ImageVerificationMetadata{}
 	logger := internal.LoggerWithPolicyContext(logging.WithName("engine.verify"), policyContext)
-	if internal.MatchPolicyContext(logger, policyContext, e.configuration) {
-		policyResponse, innerIvm := e.verifyAndPatchImages(ctx, logger, policyContext)
-		response, ivm = response.WithPolicyResponse(policyResponse), innerIvm
+	if internal.MatchPolicyContext(logger, e.client, policyContext, e.configuration) {
+		policyResponse, patchedResource, innerIvm := e.verifyAndPatchImages(ctx, logger, policyContext)
+		response, ivm = response.
+			WithPolicyResponse(policyResponse).
+			WithPatchedResource(patchedResource), innerIvm
 	}
 	response = response.WithStats(engineapi.NewExecutionStats(startTime, time.Now()))
 	e.reportMetrics(ctx, logger, policyContext.Operation(), policyContext.AdmissionOperation(), response)
@@ -153,7 +157,7 @@ func (e *engine) ApplyBackgroundChecks(
 	startTime := time.Now()
 	response := engineapi.NewEngineResponseFromPolicyContext(policyContext)
 	logger := internal.LoggerWithPolicyContext(logging.WithName("engine.background"), policyContext)
-	if internal.MatchPolicyContext(logger, policyContext, e.configuration) {
+	if internal.MatchPolicyContext(logger, e.client, policyContext, e.configuration) {
 		policyResponse := e.applyBackgroundChecks(ctx, logger, policyContext)
 		response = response.WithPolicyResponse(policyResponse)
 	}
@@ -172,7 +176,7 @@ func (e *engine) ContextLoader(
 			ctx,
 			e.jp,
 			e.client,
-			e.rclient,
+			e.rclientFactory,
 			contextEntries,
 			jsonContext,
 		)
@@ -180,11 +184,17 @@ func (e *engine) ContextLoader(
 }
 
 // matches checks if either the new or old resource satisfies the filter conditions defined in the rule
-func matches(
+func (e *engine) matches(
 	rule kyvernov1.Rule,
 	policyContext engineapi.PolicyContext,
 	resource unstructured.Unstructured,
 ) error {
+	if policyContext.AdmissionOperation() {
+		request := policyContext.AdmissionInfo()
+		if e.configuration.IsExcluded(request.AdmissionUserInfo.Username, request.AdmissionUserInfo.Groups, request.Roles, request.ClusterRoles) {
+			return fmt.Errorf("excluded by configuration")
+		}
+	}
 	gvk, subresource := policyContext.ResourceKind()
 	err := engineutils.MatchesResourceDescription(
 		resource,
@@ -233,7 +243,7 @@ func (e *engine) invokeRuleHandler(
 		fmt.Sprintf("RULE %s", rule.Name),
 		func(ctx context.Context, span trace.Span) (patchedResource unstructured.Unstructured, results []engineapi.RuleResponse) {
 			// check if resource and rule match
-			if err := matches(rule, policyContext, resource); err != nil {
+			if err := e.matches(rule, policyContext, resource); err != nil {
 				logger.V(4).Info("rule not matched", "reason", err.Error())
 				return resource, nil
 			}
@@ -242,10 +252,6 @@ func (e *engine) invokeRuleHandler(
 			} else if handler, err := handlerFactory(); err != nil {
 				return resource, handlers.WithError(rule, ruleType, "failed to instantiate handler", err)
 			} else if handler != nil {
-				// check if there's an exception
-				if ruleResp := e.hasPolicyExceptions(logger, ruleType, policyContext, rule); ruleResp != nil {
-					return resource, handlers.WithResponses(ruleResp)
-				}
 				policyContext.JSONContext().Checkpoint()
 				defer func() {
 					policyContext.JSONContext().Restore()
@@ -274,8 +280,15 @@ func (e *engine) invokeRuleHandler(
 					s := stringutils.JoinNonEmpty([]string{"preconditions not met", msg}, "; ")
 					return resource, handlers.WithSkip(rule, ruleType, s)
 				}
+				// get policy exceptions that matches both policy and rule name
+				exceptions, err := e.GetPolicyExceptions(policyContext.Policy(), rule.Name)
+				if err != nil {
+					logger.Error(err, "failed to get exceptions")
+					return resource, nil
+				}
 				// process handler
-				return handler.Process(ctx, logger, policyContext, resource, rule, contextLoader)
+				resource, ruleResponses := handler.Process(ctx, logger, policyContext, resource, rule, contextLoader, exceptions)
+				return resource, ruleResponses
 			}
 			return resource, nil
 		},

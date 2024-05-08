@@ -28,14 +28,14 @@ func (e *engine) mutate(
 	policyContext.JSONContext().Checkpoint()
 	defer policyContext.JSONContext().Restore()
 
-	for _, rule := range autogen.ComputeRules(policy) {
+	for _, rule := range autogen.ComputeRules(policy, "") {
 		startTime := time.Now()
 		logger := internal.LoggerWithRule(logger, rule)
 		handlerFactory := func() (handlers.Handler, error) {
 			if !rule.HasMutate() {
 				return nil, nil
 			}
-			if !policyContext.AdmissionOperation() && rule.IsMutateExisting() {
+			if !policyContext.AdmissionOperation() && rule.HasMutateExisting() {
 				return mutation.NewMutateExistingHandler(e.client)
 			}
 			return mutation.NewMutateResourceHandler()

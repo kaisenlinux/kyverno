@@ -16,11 +16,9 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/metric/instrument"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/aggregation"
 	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -30,8 +28,8 @@ const (
 
 type MetricsConfig struct {
 	// instruments
-	policyChangesMetric instrument.Int64Counter
-	clientQueriesMetric instrument.Int64Counter
+	policyChangesMetric metric.Int64Counter
+	clientQueriesMetric metric.Int64Counter
 
 	// config
 	config kconfig.MetricsConfiguration
@@ -51,12 +49,12 @@ func (m *MetricsConfig) Config() kconfig.MetricsConfiguration {
 func (m *MetricsConfig) initializeMetrics(meterProvider metric.MeterProvider) error {
 	var err error
 	meter := meterProvider.Meter(MeterName)
-	m.policyChangesMetric, err = meter.Int64Counter("kyverno_policy_changes", instrument.WithDescription("can be used to track all the changes associated with the Kyverno policies present on the cluster such as creation, updates and deletions"))
+	m.policyChangesMetric, err = meter.Int64Counter("kyverno_policy_changes", metric.WithDescription("can be used to track all the changes associated with the Kyverno policies present on the cluster such as creation, updates and deletions"))
 	if err != nil {
 		m.Log.Error(err, "Failed to create instrument, kyverno_policy_changes")
 		return err
 	}
-	m.clientQueriesMetric, err = meter.Int64Counter("kyverno_client_queries", instrument.WithDescription("can be used to track the number of client queries sent from Kyverno to the API-server"))
+	m.clientQueriesMetric, err = meter.Int64Counter("kyverno_client_queries", metric.WithDescription("can be used to track the number of client queries sent from Kyverno to the API-server"))
 	if err != nil {
 		m.Log.Error(err, "Failed to create instrument, kyverno_client_queries")
 		return err
@@ -73,42 +71,22 @@ func ShutDownController(ctx context.Context, pusher *sdkmetric.MeterProvider) {
 	}
 }
 
-func aggregationSelector(ik sdkmetric.InstrumentKind) aggregation.Aggregation {
-	switch ik {
-	case sdkmetric.InstrumentKindHistogram:
-		return aggregation.ExplicitBucketHistogram{
-			Boundaries: []float64{
-				0.005,
-				0.01,
-				0.025,
-				0.05,
-				0.1,
-				0.25,
-				0.5,
-				1,
-				2.5,
-				5,
-				10,
-				15,
-				20,
-				25,
-				30,
-			},
-			NoMinMax: false,
+func aggregationSelector(metricsConfiguration kconfig.MetricsConfiguration) func(ik sdkmetric.InstrumentKind) sdkmetric.Aggregation {
+	return func(ik sdkmetric.InstrumentKind) sdkmetric.Aggregation {
+		switch ik {
+		case sdkmetric.InstrumentKindHistogram:
+			return sdkmetric.AggregationExplicitBucketHistogram{
+				Boundaries: metricsConfiguration.GetBucketBoundaries(),
+				NoMinMax:   false,
+			}
+		default:
+			return sdkmetric.DefaultAggregationSelector(ik)
 		}
-	default:
-		return sdkmetric.DefaultAggregationSelector(ik)
 	}
 }
 
-func NewOTLPGRPCConfig(
-	ctx context.Context,
-	endpoint string,
-	certs string,
-	kubeClient kubernetes.Interface,
-	log logr.Logger,
-) (metric.MeterProvider, error) {
-	options := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(endpoint), otlpmetricgrpc.WithAggregationSelector(aggregationSelector)}
+func NewOTLPGRPCConfig(ctx context.Context, endpoint string, certs string, kubeClient kubernetes.Interface, log logr.Logger, configuration kconfig.MetricsConfiguration) (metric.MeterProvider, error) {
+	options := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(endpoint), otlpmetricgrpc.WithAggregationSelector(aggregationSelector(configuration))}
 	if certs != "" {
 		// here the certificates are stored as configmaps
 		transportCreds, err := tlsutils.FetchCert(ctx, certs, kubeClient)
@@ -131,7 +109,7 @@ func NewOTLPGRPCConfig(
 		resource.NewWithAttributes(
 			semconv.SchemaURL,
 			semconv.ServiceNameKey.String(MeterName),
-			semconv.ServiceVersionKey.String(version.BuildVersion),
+			semconv.ServiceVersionKey.String(version.Version()),
 		),
 	)
 	if err != nil {
@@ -146,21 +124,19 @@ func NewOTLPGRPCConfig(
 	provider := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(reader),
 		sdkmetric.WithResource(res),
+		sdkmetric.WithView(configuration.BuildMeterProviderViews()...),
 	)
 	return provider, nil
 }
 
-func NewPrometheusConfig(
-	ctx context.Context,
-	log logr.Logger,
-) (metric.MeterProvider, *http.ServeMux, error) {
+func NewPrometheusConfig(ctx context.Context, log logr.Logger, configuration kconfig.MetricsConfiguration) (metric.MeterProvider, *http.ServeMux, error) {
 	res, err := resource.Merge(
 		resource.Default(),
 		resource.NewWithAttributes(
 			semconv.SchemaURL,
 			semconv.ServiceNameKey.String("kyverno-svc-metrics"),
 			semconv.ServiceNamespaceKey.String(kconfig.KyvernoNamespace()),
-			semconv.ServiceVersionKey.String(version.BuildVersion),
+			semconv.ServiceVersionKey.String(version.Version()),
 		),
 	)
 	if err != nil {
@@ -170,7 +146,7 @@ func NewPrometheusConfig(
 	exporter, err := prometheus.New(
 		prometheus.WithoutUnits(),
 		prometheus.WithoutTargetInfo(),
-		prometheus.WithAggregationSelector(aggregationSelector),
+		prometheus.WithAggregationSelector(aggregationSelector(configuration)),
 	)
 	if err != nil {
 		log.Error(err, "failed to initialize prometheus exporter")
@@ -179,6 +155,7 @@ func NewPrometheusConfig(
 	provider := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(exporter),
 		sdkmetric.WithResource(res),
+		sdkmetric.WithView(configuration.BuildMeterProviderViews()...),
 	)
 	metricsServerMux := http.NewServeMux()
 	metricsServerMux.Handle(config.MetricsPath, promhttp.Handler())
@@ -194,7 +171,7 @@ func (m *MetricsConfig) RecordPolicyChanges(ctx context.Context, policyValidatio
 		attribute.String("policy_name", policyName),
 		attribute.String("policy_change_type", policyChangeType),
 	}
-	m.policyChangesMetric.Add(ctx, 1, commonLabels...)
+	m.policyChangesMetric.Add(ctx, 1, metric.WithAttributes(commonLabels...))
 }
 
 func (m *MetricsConfig) RecordClientQueries(ctx context.Context, clientQueryOperation ClientQueryOperation, clientType ClientType, resourceKind string, resourceNamespace string) {
@@ -204,5 +181,5 @@ func (m *MetricsConfig) RecordClientQueries(ctx context.Context, clientQueryOper
 		attribute.String("resource_kind", resourceKind),
 		attribute.String("resource_namespace", resourceNamespace),
 	}
-	m.clientQueriesMetric.Add(ctx, 1, commonLabels...)
+	m.clientQueriesMetric.Add(ctx, 1, metric.WithAttributes(commonLabels...))
 }

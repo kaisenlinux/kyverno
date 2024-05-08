@@ -6,7 +6,7 @@ import (
 
 	"github.com/go-logr/logr"
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
-	"github.com/kyverno/kyverno/pkg/clients/dclient"
+	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	"github.com/kyverno/kyverno/pkg/engine/apicall"
 	enginecontext "github.com/kyverno/kyverno/pkg/engine/context"
 	"github.com/kyverno/kyverno/pkg/engine/jmespath"
@@ -18,7 +18,8 @@ type apiLoader struct {
 	entry     kyvernov1.ContextEntry
 	enginectx enginecontext.Interface
 	jp        jmespath.Interface
-	client    dclient.Interface
+	client    engineapi.RawClient
+	config    apicall.APICallConfiguration
 	data      []byte
 }
 
@@ -28,7 +29,8 @@ func NewAPILoader(
 	entry kyvernov1.ContextEntry,
 	enginectx enginecontext.Interface,
 	jp jmespath.Interface,
-	client dclient.Interface,
+	client engineapi.RawClient,
+	apiCallConfig apicall.APICallConfiguration,
 ) enginecontext.Loader {
 	return &apiLoader{
 		ctx:       ctx,
@@ -37,6 +39,7 @@ func NewAPILoader(
 		enginectx: enginectx,
 		jp:        jp,
 		client:    client,
+		config:    apiCallConfig,
 	}
 }
 
@@ -45,7 +48,7 @@ func (a *apiLoader) HasLoaded() bool {
 }
 
 func (a *apiLoader) LoadData() error {
-	executor, err := apicall.New(a.logger, a.jp, a.entry, a.enginectx, a.client)
+	executor, err := apicall.New(a.logger, a.jp, a.entry, a.enginectx, a.client, a.config)
 	if err != nil {
 		return fmt.Errorf("failed to initiaize APICal: %w", err)
 	}

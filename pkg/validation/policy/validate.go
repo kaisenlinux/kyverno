@@ -7,56 +7,60 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
-	"github.com/distribution/distribution/reference"
+	"github.com/distribution/reference"
 	jsonpatch "github.com/evanphx/json-patch/v5"
-	"github.com/jmespath/go-jmespath"
 	"github.com/jmoiron/jsonq"
+	"github.com/kyverno/go-jmespath"
+	"github.com/kyverno/kyverno/api/kyverno"
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
-	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/utils/common"
+	kyvernov2alpha1 "github.com/kyverno/kyverno/api/kyverno/v2alpha1"
+	"github.com/kyverno/kyverno/ext/wildcard"
 	"github.com/kyverno/kyverno/pkg/autogen"
+	"github.com/kyverno/kyverno/pkg/client/clientset/versioned"
 	"github.com/kyverno/kyverno/pkg/clients/dclient"
-	openapicontroller "github.com/kyverno/kyverno/pkg/controllers/openapi"
 	enginecontext "github.com/kyverno/kyverno/pkg/engine/context"
 	"github.com/kyverno/kyverno/pkg/engine/variables"
+	"github.com/kyverno/kyverno/pkg/engine/variables/operator"
 	"github.com/kyverno/kyverno/pkg/engine/variables/regex"
 	"github.com/kyverno/kyverno/pkg/logging"
-	"github.com/kyverno/kyverno/pkg/openapi"
 	apiutils "github.com/kyverno/kyverno/pkg/utils/api"
 	datautils "github.com/kyverno/kyverno/pkg/utils/data"
 	kubeutils "github.com/kyverno/kyverno/pkg/utils/kube"
-	"github.com/kyverno/kyverno/pkg/utils/wildcard"
-	"golang.org/x/exp/slices"
+	vaputils "github.com/kyverno/kyverno/pkg/validatingadmissionpolicy"
+	admissionregistrationv1alpha1 "k8s.io/api/admissionregistration/v1alpha1"
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/apiserver/pkg/admission/plugin/validatingadmissionpolicy"
+	"k8s.io/apiserver/pkg/cel/openapi/resolver"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/restmapper"
 )
 
 var (
-	allowedVariables                   = regexp.MustCompile(`request\.|serviceAccountName|serviceAccountNamespace|element|elementIndex|@|images\.|image\.|([a-z_0-9]+\()[^{}]`)
-	allowedVariablesBackground         = regexp.MustCompile(`request\.|element|elementIndex|@|images\.|image\.|([a-z_0-9]+\()[^{}]`)
-	allowedVariablesInTarget           = regexp.MustCompile(`request\.|serviceAccountName|serviceAccountNamespace|element|elementIndex|@|images\.|image\.|target\.|([a-z_0-9]+\()[^{}]`)
-	allowedVariablesBackgroundInTarget = regexp.MustCompile(`request\.|element|elementIndex|@|images\.|image\.|target\.|([a-z_0-9]+\()[^{}]`)
+	allowedVariables                   = enginecontext.ReservedKeys
+	allowedVariablesBackground         = regexp.MustCompile(`request\.|element|elementIndex|@|images|images\.|image\.|([a-z_0-9]+\()[^{}]`)
+	allowedVariablesInTarget           = regexp.MustCompile(`request\.|serviceAccountName|serviceAccountNamespace|element|elementIndex|@|images|images\.|image\.|target\.|([a-z_0-9]+\()[^{}]`)
+	allowedVariablesBackgroundInTarget = regexp.MustCompile(`request\.|element|elementIndex|@|images|images\.|image\.|target\.|([a-z_0-9]+\()[^{}]`)
+	regexVariables                     = regexp.MustCompile(`\{\{[^{}]*\}\}`)
 	// wildCardAllowedVariables represents regex for the allowed fields in wildcards
 	wildCardAllowedVariables = regexp.MustCompile(`\{\{\s*(request\.|serviceAccountName|serviceAccountNamespace)[^{}]*\}\}`)
 	errOperationForbidden    = errors.New("variables are forbidden in the path of a JSONPatch")
 )
+
+var allowedJsonPatch = regexp.MustCompile("^/")
 
 // validateJSONPatchPathForForwardSlash checks for forward slash
 func validateJSONPatchPathForForwardSlash(patch string) error {
 	// Replace all variables in PatchesJSON6902, all variable checks should have happened already.
 	// This prevents further checks from failing unexpectedly.
 	patch = variables.ReplaceAllVars(patch, func(s string) string { return "kyvernojsonpatchvariable" })
-
-	re, err := regexp.Compile("^/")
-	if err != nil {
-		return err
-	}
 
 	jsonPatch, err := yaml.ToJSON([]byte(patch))
 	if err != nil {
@@ -74,7 +78,7 @@ func validateJSONPatchPathForForwardSlash(patch string) error {
 			return err
 		}
 
-		val := re.MatchString(path)
+		val := allowedJsonPatch.MatchString(path)
 
 		if !val {
 			return fmt.Errorf("%s", path)
@@ -95,10 +99,12 @@ func validateJSONPatch(patch string, ruleIdx int) error {
 	}
 	for _, operation := range decodedPatch {
 		op := operation.Kind()
-		if op != "add" && op != "remove" && op != "replace" {
+		requiresValue := op != "remove" && op != "move" && op != "copy"
+		validOperation := op == "add" || op == "remove" || op == "replace" || op == "move" || op == "copy" || op == "test"
+		if !validOperation {
 			return fmt.Errorf("unexpected kind: spec.rules[%d]: %s", ruleIdx, op)
 		}
-		if op != "remove" {
+		if requiresValue {
 			if _, err := operation.ValueInterface(); err != nil {
 				return fmt.Errorf("invalid value: spec.rules[%d]: %s", ruleIdx, err)
 			}
@@ -122,13 +128,14 @@ func checkValidationFailureAction(spec *kyvernov1.Spec) []string {
 }
 
 // Validate checks the policy and rules declarations for required configurations
-func Validate(policy, oldPolicy kyvernov1.PolicyInterface, client dclient.Interface, mock bool, openApiManager openapi.Manager, username string) ([]string, error) {
+func Validate(policy, oldPolicy kyvernov1.PolicyInterface, client dclient.Interface, kyvernoClient versioned.Interface, mock bool, username string) ([]string, error) {
 	var warnings []string
 	spec := policy.GetSpec()
 	background := spec.BackgroundProcessingEnabled()
 	mutateExistingOnPolicyUpdate := spec.GetMutateExistingOnPolicyUpdate()
-	if !mock {
-		openapicontroller.NewController(client, openApiManager).CheckSync(context.TODO())
+	if policy.GetSpec().CustomWebhookConfiguration() &&
+		!kubeutils.HigherThanKubernetesVersion(client.GetKubeClient().Discovery(), logging.GlobalLogger(), 1, 27, 0) {
+		return warnings, fmt.Errorf("custom webhook configurations are only supported in kubernetes version 1.27.0 and above")
 	}
 
 	warnings = append(warnings, checkValidationFailureAction(spec)...)
@@ -147,11 +154,14 @@ func Validate(policy, oldPolicy kyvernov1.PolicyInterface, client dclient.Interf
 		}
 	}
 
-	var res []*metav1.APIResourceList
-	clusterResources := sets.New[string]()
-	if !mock {
+	getClusteredResources := func(invalidate bool) (sets.Set[string], error) {
+		clusterResources := sets.New[string]()
 		// Get all the cluster type kind supported by cluster
-		res, err = discovery.ServerPreferredResources(client.Discovery().DiscoveryInterface())
+		d := client.Discovery().CachedDiscoveryInterface()
+		if invalidate {
+			d.Invalidate()
+		}
+		res, err := discovery.ServerPreferredResources(d)
 		if err != nil {
 			if discovery.IsGroupDiscoveryFailedError(err) {
 				err := err.(*discovery.ErrGroupDiscoveryFailed)
@@ -159,7 +169,7 @@ func Validate(policy, oldPolicy kyvernov1.PolicyInterface, client dclient.Interf
 					logging.Error(err, "failed to list api resources", "group", gv)
 				}
 			} else {
-				return warnings, err
+				return nil, err
 			}
 		}
 		for _, resList := range res {
@@ -170,10 +180,29 @@ func Validate(policy, oldPolicy kyvernov1.PolicyInterface, client dclient.Interf
 				}
 			}
 		}
+		return clusterResources, nil
 	}
+	clusterResources := sets.New[string]()
 
-	if errs := policy.Validate(clusterResources); len(errs) != 0 {
-		return warnings, errs.ToAggregate()
+	// if not using a mock, we first try to validate and if it fails we retry with cache invalidation in between
+	if !mock {
+		clusterResources, err = getClusteredResources(false)
+		if err != nil {
+			return warnings, err
+		}
+		if errs := policy.Validate(clusterResources); len(errs) != 0 {
+			clusterResources, err = getClusteredResources(true)
+			if err != nil {
+				return warnings, err
+			}
+			if errs := policy.Validate(clusterResources); len(errs) != 0 {
+				return warnings, errs.ToAggregate()
+			}
+		}
+	} else {
+		if errs := policy.Validate(clusterResources); len(errs) != 0 {
+			return warnings, errs.ToAggregate()
+		}
 	}
 
 	if !policy.IsNamespaced() {
@@ -182,12 +211,20 @@ func Validate(policy, oldPolicy kyvernov1.PolicyInterface, client dclient.Interf
 			return warnings, err
 		}
 	}
+	if !policy.AdmissionProcessingEnabled() && !policy.BackgroundProcessingEnabled() {
+		return warnings, fmt.Errorf("disabling both admission and background processing is not allowed")
+	}
+	if !policy.AdmissionProcessingEnabled() {
+		if spec.HasMutate() || spec.HasGenerate() || spec.HasVerifyImages() {
+			return warnings, fmt.Errorf("disabling admission processing is only allowed with validation policies")
+		}
+	}
 
 	if err := immutableGenerateFields(policy, oldPolicy); err != nil {
 		return warnings, err
 	}
 
-	rules := autogen.ComputeRules(policy)
+	rules := autogen.ComputeRules(policy, "")
 	rulesPath := specPath.Child("rules")
 
 	for i, rule := range rules {
@@ -278,8 +315,13 @@ func Validate(policy, oldPolicy kyvernov1.PolicyInterface, client dclient.Interf
 			}
 		}
 
-		if err := validateActions(i, &rules[i], client, mock, username); err != nil {
+		msg, err := validateActions(i, &rules[i], client, mock, username)
+		if err != nil {
 			return warnings, err
+		} else {
+			if len(msg) != 0 {
+				warnings = append(warnings, msg)
+			}
 		}
 
 		if rule.HasVerifyImages() {
@@ -353,13 +395,96 @@ func Validate(policy, oldPolicy kyvernov1.PolicyInterface, client dclient.Interf
 			checkForScaleSubresource(mutationJson, allKinds, &warnings)
 			checkForStatusSubresource(mutationJson, allKinds, &warnings)
 		}
+
+		if rule.HasVerifyImages() {
+			checkForDeprecatedFieldsInVerifyImages(rule, &warnings)
+		}
+
+		checkForDeprecatedOperatorsInRule(rule, &warnings)
 	}
-	if !mock && (spec.SchemaValidation == nil || *spec.SchemaValidation) {
-		if err := openApiManager.ValidatePolicyMutation(policy); err != nil {
-			return warnings, fmt.Errorf("%s (you can bypass schema validation by setting `spec.schemaValidation: false`)", err)
+
+	// global context entry validation
+	if kyvernoClient != nil {
+		gctxentries, err := kyvernoClient.KyvernoV2alpha1().GlobalContextEntries().List(context.Background(), metav1.ListOptions{})
+		if err != nil {
+			return nil, err
+		}
+		for _, rule := range rules {
+			if rule.Context == nil {
+				continue
+			}
+			for _, ctxEntry := range rule.Context {
+				if ctxEntry.GlobalReference != nil {
+					if ctxEntry.GlobalReference.Name == "" {
+						warnings = append(warnings, "Global context entry name is not provided")
+						return warnings, nil
+					}
+					if !isGlobalContextEntryReady(ctxEntry.GlobalReference.Name, gctxentries) {
+						warnings = append(warnings, fmt.Sprintf("Global context entry %s does not exist or is not ready", ctxEntry.GlobalReference.Name))
+						return warnings, nil
+					}
+				}
+			}
+		}
+	}
+
+	// check for CEL expression warnings in case of CEL subrules
+	if ok, _ := vaputils.CanGenerateVAP(spec); ok && client != nil {
+		resolver := &resolver.ClientDiscoveryResolver{
+			Discovery: client.GetKubeClient().Discovery(),
+		}
+		groupResources, err := restmapper.GetAPIGroupResources(client.GetKubeClient().Discovery())
+		if err != nil {
+			return nil, err
+		}
+		mapper := restmapper.NewDiscoveryRESTMapper(groupResources)
+		checker := &validatingadmissionpolicy.TypeChecker{
+			SchemaResolver: resolver,
+			RestMapper:     mapper,
+		}
+
+		// build Kubernetes ValidatingAdmissionPolicy
+		vap := &admissionregistrationv1alpha1.ValidatingAdmissionPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: policy.GetName(),
+			},
+		}
+		err = vaputils.BuildValidatingAdmissionPolicy(client.Discovery(), vap, policy)
+		if err != nil {
+			return nil, err
+		}
+		v1beta1vap := vaputils.ConvertValidatingAdmissionPolicy(*vap)
+
+		// check cel expression warnings
+		ctx := checker.CreateContext(&v1beta1vap)
+		fieldRef := field.NewPath("spec", "rules[0]", "validate", "cel", "expressions")
+		for i, e := range spec.Rules[0].Validation.CEL.Expressions {
+			results := checker.CheckExpression(ctx, e.Expression)
+			if len(results) != 0 {
+				msg := fmt.Sprintf("%s:%s", fieldRef.Index(i).Child("expression").String(), strings.ReplaceAll(results.String(), "\n", ";"))
+				warnings = append(warnings, msg)
+			}
+
+			if e.MessageExpression == "" {
+				continue
+			}
+			results = checker.CheckExpression(ctx, e.MessageExpression)
+			if len(results) != 0 {
+				msg := fmt.Sprintf("%s:%s", fieldRef.Index(i).Child("messageExpression").String(), strings.ReplaceAll(results.String(), "\n", ";"))
+				warnings = append(warnings, msg)
+			}
 		}
 	}
 	return warnings, nil
+}
+
+func isGlobalContextEntryReady(name string, gctxentries *kyvernov2alpha1.GlobalContextEntryList) bool {
+	for _, gctxentry := range gctxentries.Items {
+		if gctxentry.Name == name {
+			return gctxentry.Status.IsReady()
+		}
+	}
+	return false
 }
 
 func ValidateVariables(p kyvernov1.PolicyInterface, backgroundMode bool) error {
@@ -380,7 +505,7 @@ func ValidateVariables(p kyvernov1.PolicyInterface, backgroundMode bool) error {
 
 // hasInvalidVariables - checks for unexpected variables in the policy
 func hasInvalidVariables(policy kyvernov1.PolicyInterface, background bool) error {
-	for _, r := range autogen.ComputeRules(policy) {
+	for _, r := range autogen.ComputeRules(policy, "") {
 		ruleCopy := r.DeepCopy()
 
 		if err := ruleForbiddenSectionsHaveVariables(ruleCopy); err != nil {
@@ -532,7 +657,7 @@ func objectHasVariables(object interface{}) error {
 		return err
 	}
 
-	if len(common.RegexVariables.FindAllStringSubmatch(string(objectJSON), -1)) > 0 {
+	if len(regexVariables.FindAllStringSubmatch(string(objectJSON), -1)) > 0 {
 		return fmt.Errorf("invalid variables")
 	}
 
@@ -592,7 +717,7 @@ func getAllowedVariables(background bool, target bool) *regexp.Regexp {
 
 func addContextVariables(entries []kyvernov1.ContextEntry, ctx *enginecontext.MockContext) {
 	for _, contextEntry := range entries {
-		if contextEntry.APICall != nil || contextEntry.ImageRegistry != nil || contextEntry.Variable != nil {
+		if contextEntry.APICall != nil || contextEntry.GlobalReference != nil || contextEntry.ImageRegistry != nil || contextEntry.Variable != nil {
 			ctx.AddVariable(contextEntry.Name + "*")
 		}
 
@@ -629,6 +754,17 @@ func validateMatchKindHelper(rule kyvernov1.Rule) error {
 	return fmt.Errorf("at least one element must be specified in a kind block, the kind attribute is mandatory when working with the resources element")
 }
 
+// isMapStringString goes through a map to verify values are string
+func isMapStringString(m map[string]interface{}) bool {
+	// range over labels
+	for _, val := range m {
+		if val == nil || reflect.TypeOf(val).String() != "string" {
+			return false
+		}
+	}
+	return true
+}
+
 // isLabelAndAnnotationsString :- Validate if labels and annotations contains only string values
 func isLabelAndAnnotationsString(rule kyvernov1.Rule) bool {
 	checkLabelAnnotation := func(metaKey map[string]interface{}) bool {
@@ -636,21 +772,15 @@ func isLabelAndAnnotationsString(rule kyvernov1.Rule) bool {
 			if mk == "labels" {
 				labelKey, ok := metaKey[mk].(map[string]interface{})
 				if ok {
-					// range over labels
-					for _, val := range labelKey {
-						if reflect.TypeOf(val).String() != "string" {
-							return false
-						}
+					if !isMapStringString(labelKey) {
+						return false
 					}
 				}
 			} else if mk == "annotations" {
 				annotationKey, ok := metaKey[mk].(map[string]interface{})
 				if ok {
-					// range over annotations
-					for _, val := range annotationKey {
-						if reflect.TypeOf(val).String() != "string" {
-							return false
-						}
+					if !isMapStringString(annotationKey) {
+						return false
 					}
 				}
 			}
@@ -815,12 +945,90 @@ func validateResources(path *field.Path, rule kyvernov1.Rule) (string, error) {
 		if path, err := validateConditions(target, "preconditions"); err != nil {
 			return fmt.Sprintf("validate.%s", path), err
 		}
+		if path, err := validateRawJSONConditionOperator(target, "preconditions"); err != nil {
+			return fmt.Sprintf("validate.%s", path), err
+		}
 	}
 	// validating the values present under validate.conditions, if they exist
 	if rule.Validation.Deny != nil {
 		if target := rule.Validation.Deny.GetAnyAllConditions(); target != nil {
 			if path, err := validateConditions(target, "conditions"); err != nil {
 				return fmt.Sprintf("validate.deny.%s", path), err
+			}
+			if path, err := validateRawJSONConditionOperator(target, "conditions"); err != nil {
+				return fmt.Sprintf("validate.deny.%s", path), err
+			}
+		}
+	}
+
+	if len(rule.Validation.ForEachValidation) != 0 {
+		if path, err := validateValidationForEach(rule.Validation.ForEachValidation, "validate.foreach"); err != nil {
+			return path, err
+		}
+	}
+
+	if len(rule.Mutation.ForEachMutation) != 0 {
+		if path, err := validateMutationForEach(rule.Mutation.ForEachMutation, "mutate.foreach"); err != nil {
+			return path, err
+		}
+	}
+
+	if len(rule.VerifyImages) != 0 {
+		for _, vi := range rule.VerifyImages {
+			for _, att := range vi.Attestations {
+				for _, c := range att.Conditions {
+					if path, err := validateAnyAllConditionOperator(c, "conditions"); err != nil {
+						return fmt.Sprintf("verifyImages.attestations.%s", path), err
+					}
+				}
+			}
+		}
+	}
+
+	return "", nil
+}
+
+func validateValidationForEach(foreach []kyvernov1.ForEachValidation, schemaKey string) (string, error) {
+	for _, fe := range foreach {
+		if fe.AnyAllConditions != nil {
+			if path, err := validateAnyAllConditionOperator(*fe.AnyAllConditions, "conditions"); err != nil {
+				return fmt.Sprintf("%s.%s", schemaKey, path), err
+			}
+		}
+		if fe.Deny != nil {
+			if target := fe.Deny.GetAnyAllConditions(); target != nil {
+				if path, err := validateRawJSONConditionOperator(target, "conditions"); err != nil {
+					return fmt.Sprintf("%s.deny.%s", schemaKey, path), err
+				}
+			}
+		}
+		if fe.ForEachValidation != nil {
+			nestedForEach, err := apiutils.DeserializeJSONArray[kyvernov1.ForEachValidation](fe.ForEachValidation)
+			if err != nil {
+				return schemaKey, err
+			}
+			if path, err := validateValidationForEach(nestedForEach, schemaKey); err != nil {
+				return fmt.Sprintf("%s.%s", schemaKey, path), err
+			}
+		}
+	}
+	return "", nil
+}
+
+func validateMutationForEach(foreach []kyvernov1.ForEachMutation, schemaKey string) (string, error) {
+	for _, fe := range foreach {
+		if fe.AnyAllConditions != nil {
+			if path, err := validateAnyAllConditionOperator(*fe.AnyAllConditions, "conditions"); err != nil {
+				return fmt.Sprintf("%s.%s", schemaKey, path), err
+			}
+		}
+		if fe.ForEachMutation != nil {
+			nestedForEach, err := apiutils.DeserializeJSONArray[kyvernov1.ForEachMutation](fe.ForEachMutation)
+			if err != nil {
+				return schemaKey, err
+			}
+			if path, err := validateMutationForEach(nestedForEach, schemaKey); err != nil {
+				return fmt.Sprintf("%s.%s", schemaKey, path), err
 			}
 		}
 	}
@@ -891,6 +1099,80 @@ func validateConditionValues(c kyvernov1.Condition) (string, error) {
 	}
 }
 
+func validateOperator(c kyvernov1.ConditionOperator) (string, error) {
+	if !operator.IsOperatorValid(c) {
+		return "", fmt.Errorf("entered value of `operator` is invalid. valid values: %+q", operator.GetAllConditionOperators())
+	}
+	return "", nil
+}
+
+func validateConditionOperator(c []kyvernov1.Condition, schemaKey string) (string, error) {
+	allowedSchemaKeys := map[string]bool{
+		"preconditions": true,
+		"conditions":    true,
+	}
+	if !allowedSchemaKeys[schemaKey] {
+		return schemaKey, fmt.Errorf("wrong schema key found for validating the conditions. Conditions can only occur under one of ['preconditions', 'conditions'] keys in the policy schema")
+	}
+	for i, condition := range c {
+		if path, err := validateOperator(condition.Operator); err != nil {
+			return fmt.Sprintf("%s[%d].%s", schemaKey, i, path), err
+		}
+	}
+	return "", nil
+}
+
+func validateAnyAllConditionOperator(c kyvernov1.AnyAllConditions, schemaKey string) (string, error) {
+	allowedSchemaKeys := map[string]bool{
+		"preconditions": true,
+		"conditions":    true,
+	}
+	if !allowedSchemaKeys[schemaKey] {
+		return schemaKey, fmt.Errorf("wrong schema key found for validating the conditions. Conditions can only occur under one of ['preconditions', 'conditions'] keys in the policy schema")
+	}
+	if !datautils.DeepEqual(c, kyvernov1.AnyAllConditions{}) && c.AnyConditions != nil {
+		for i, condition := range c.AnyConditions {
+			if path, err := validateOperator(condition.Operator); err != nil {
+				return fmt.Sprintf("%s.any[%d].%s", schemaKey, i, path), err
+			}
+		}
+	}
+	if !datautils.DeepEqual(c, kyvernov1.AnyAllConditions{}) && c.AllConditions != nil {
+		for i, condition := range c.AllConditions {
+			if path, err := validateOperator(condition.Operator); err != nil {
+				return fmt.Sprintf("%s.any[%d].%s", schemaKey, i, path), err
+			}
+		}
+	}
+	return "", nil
+}
+
+func validateRawJSONConditionOperator(c apiextensions.JSON, schemaKey string) (string, error) {
+	allowedSchemaKeys := map[string]bool{
+		"preconditions": true,
+		"conditions":    true,
+	}
+	if !allowedSchemaKeys[schemaKey] {
+		return schemaKey, fmt.Errorf("wrong schema key found for validating the conditions. Conditions can only occur under one of ['preconditions', 'conditions'] keys in the policy schema")
+	}
+
+	kyvernoConditions, err := apiutils.ApiextensionsJsonToKyvernoConditions(c)
+	if err != nil {
+		return schemaKey, err
+	}
+	switch typedConditions := kyvernoConditions.(type) {
+	case kyvernov1.AnyAllConditions:
+		if path, err := validateAnyAllConditionOperator(typedConditions, schemaKey); err != nil {
+			return path, err
+		}
+	case []kyvernov1.Condition: // backwards compatibility
+		if path, err := validateConditionOperator(typedConditions, schemaKey); err != nil {
+			return path, err
+		}
+	}
+	return "", nil
+}
+
 func validateValuesKeyRequest(c kyvernov1.Condition) (string, error) {
 	k := c.GetKey()
 	switch strings.ReplaceAll(k.(string), " ", "") {
@@ -952,13 +1234,15 @@ func validateRuleContext(rule kyvernov1.Rule) error {
 		}
 
 		var err error
-		if entry.ConfigMap != nil && entry.APICall == nil && entry.ImageRegistry == nil && entry.Variable == nil {
+		if entry.ConfigMap != nil && entry.APICall == nil && entry.GlobalReference == nil && entry.ImageRegistry == nil && entry.Variable == nil {
 			err = validateConfigMap(entry)
-		} else if entry.ConfigMap == nil && entry.APICall != nil && entry.ImageRegistry == nil && entry.Variable == nil {
+		} else if entry.ConfigMap == nil && entry.APICall != nil && entry.GlobalReference == nil && entry.ImageRegistry == nil && entry.Variable == nil {
 			err = validateAPICall(entry)
-		} else if entry.ConfigMap == nil && entry.APICall == nil && entry.ImageRegistry != nil && entry.Variable == nil {
+		} else if entry.ConfigMap == nil && entry.APICall == nil && entry.GlobalReference != nil && entry.ImageRegistry == nil && entry.Variable == nil {
+			err = validateGlobalReference(entry)
+		} else if entry.ConfigMap == nil && entry.APICall == nil && entry.GlobalReference == nil && entry.ImageRegistry != nil && entry.Variable == nil {
 			err = validateImageRegistry(entry)
-		} else if entry.ConfigMap == nil && entry.APICall == nil && entry.ImageRegistry == nil && entry.Variable != nil {
+		} else if entry.ConfigMap == nil && entry.APICall == nil && entry.GlobalReference == nil && entry.ImageRegistry == nil && entry.Variable != nil {
 			err = validateVariable(entry)
 		} else {
 			return fmt.Errorf("exactly one of configMap or apiCall or imageRegistry or variable is required for context entries")
@@ -1066,6 +1350,26 @@ func validateAPICall(entry kyvernov1.ContextEntry) error {
 	return nil
 }
 
+func validateGlobalReference(entry kyvernov1.ContextEntry) error {
+	if entry.GlobalReference == nil {
+		return nil
+	}
+
+	// If JMESPath contains variables, the validation will fail because it's not
+	// possible to infer which value will be inserted by the variable
+	// Skip validation if a variable is detected
+
+	jmesPath := variables.ReplaceAllVars(entry.GlobalReference.JMESPath, func(s string) string { return "kyvernojmespathvariable" })
+
+	if !strings.Contains(jmesPath, "kyvernojmespathvariable") && entry.GlobalReference.JMESPath != "" {
+		if _, err := jmespath.NewParser().Parse(entry.GlobalReference.JMESPath); err != nil {
+			return fmt.Errorf("failed to parse JMESPath %s: %v", entry.GlobalReference.JMESPath, err)
+		}
+	}
+
+	return nil
+}
+
 func validateImageRegistry(entry kyvernov1.ContextEntry) error {
 	if entry.ImageRegistry.Reference == "" {
 		return fmt.Errorf("a ref is required for imageRegistry context entry")
@@ -1123,7 +1427,7 @@ func jsonPatchOnPod(rule kyvernov1.Rule) bool {
 
 func podControllerAutoGenExclusion(policy kyvernov1.PolicyInterface) bool {
 	annotations := policy.GetAnnotations()
-	val, ok := annotations[kyvernov1.PodControllersAnnotation]
+	val, ok := annotations[kyverno.AnnotationAutogenControllers]
 	if !ok || val == "none" {
 		return false
 	}
@@ -1299,7 +1603,8 @@ func checkForScaleSubresource(ruleTypeJson []byte, allKinds []string, warnings *
 }
 
 func checkForStatusSubresource(ruleTypeJson []byte, allKinds []string, warnings *[]string) {
-	if strings.Contains(string(ruleTypeJson), "status") {
+	rule := string(ruleTypeJson)
+	if strings.Contains(rule, ".status") || strings.Contains(rule, "\"status\":") {
 		for _, kind := range allKinds {
 			if strings.Contains(strings.ToLower(kind), "status") {
 				return
@@ -1307,5 +1612,92 @@ func checkForStatusSubresource(ruleTypeJson []byte, allKinds []string, warnings 
 		}
 		msg := "You are matching on status but not including the status subresource in the policy."
 		*warnings = append(*warnings, msg)
+	}
+}
+
+func checkForDeprecatedFieldsInVerifyImages(rule kyvernov1.Rule, warnings *[]string) {
+	for _, imageVerify := range rule.VerifyImages {
+		for _, attestation := range imageVerify.Attestations {
+			if attestation.PredicateType != "" {
+				msg := fmt.Sprintf("predicateType has been deprecated use 'type: %s' instead of 'predicateType: %s'", attestation.PredicateType, attestation.PredicateType)
+				*warnings = append(*warnings, msg)
+			}
+		}
+	}
+}
+
+func checkDeprecatedOperator(c kyvernov1.ConditionOperator) string {
+	if operator.IsOperatorDeprecated(c) {
+		return fmt.Sprintf("Operator %s has been deprecated and will be removed soon. Use these instead: %+q", string(c), operator.GetDeprecatedOperatorAlternative(string(c)))
+	}
+	return ""
+}
+
+func checkDeprecatedConditionOperator(c []kyvernov1.Condition, warnings *[]string) {
+	for _, condition := range c {
+		if warn := checkDeprecatedOperator(condition.Operator); len(warn) > 0 {
+			*warnings = append(*warnings, warn)
+		}
+	}
+}
+
+func checkDeprecatedAnyAllConditionOperator(c kyvernov1.AnyAllConditions, warnings *[]string) {
+	if !datautils.DeepEqual(c, kyvernov1.AnyAllConditions{}) && c.AnyConditions != nil {
+		for _, condition := range c.AnyConditions {
+			if warn := checkDeprecatedOperator(condition.Operator); len(warn) > 0 {
+				*warnings = append(*warnings, warn)
+			}
+		}
+	}
+	if !datautils.DeepEqual(c, kyvernov1.AnyAllConditions{}) && c.AllConditions != nil {
+		for _, condition := range c.AllConditions {
+			if warn := checkDeprecatedOperator(condition.Operator); len(warn) > 0 {
+				*warnings = append(*warnings, warn)
+			}
+		}
+	}
+}
+
+func checkDeprecatedRawJSONConditionOperator(c apiextensions.JSON, warnings *[]string) {
+	kyvernoConditions, err := apiutils.ApiextensionsJsonToKyvernoConditions(c)
+	if err != nil {
+		return
+	}
+	switch typedConditions := kyvernoConditions.(type) {
+	case kyvernov1.AnyAllConditions:
+		checkDeprecatedAnyAllConditionOperator(typedConditions, warnings)
+	case []kyvernov1.Condition: // backwards compatibility
+		checkDeprecatedConditionOperator(typedConditions, warnings)
+	}
+}
+
+func checkForDeprecatedOperatorsInRule(rule kyvernov1.Rule, warnings *[]string) {
+	if rule.Validation.Deny != nil {
+		if target := rule.Validation.Deny.GetAnyAllConditions(); target != nil {
+			checkDeprecatedRawJSONConditionOperator(target, warnings)
+		}
+	}
+
+	if len(rule.Validation.ForEachValidation) != 0 {
+		for _, fe := range rule.Validation.ForEachValidation {
+			if fe.AnyAllConditions != nil {
+				checkDeprecatedAnyAllConditionOperator(*fe.AnyAllConditions, warnings)
+			}
+			if fe.Deny != nil {
+				if target := fe.Deny.GetAnyAllConditions(); target != nil {
+					checkDeprecatedRawJSONConditionOperator(target, warnings)
+				}
+			}
+		}
+	}
+
+	if len(rule.VerifyImages) != 0 {
+		for _, vi := range rule.VerifyImages {
+			for _, att := range vi.Attestations {
+				for _, c := range att.Conditions {
+					checkDeprecatedAnyAllConditionOperator(c, warnings)
+				}
+			}
+		}
 	}
 }

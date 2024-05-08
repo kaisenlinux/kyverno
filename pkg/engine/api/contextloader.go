@@ -4,11 +4,13 @@ import (
 	"context"
 
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
-	"github.com/kyverno/kyverno/pkg/clients/dclient"
 	enginecontext "github.com/kyverno/kyverno/pkg/engine/context"
 	"github.com/kyverno/kyverno/pkg/engine/jmespath"
-	"github.com/kyverno/kyverno/pkg/registryclient"
 )
+
+type RegistryClientFactory interface {
+	GetClient(ctx context.Context, creds *kyvernov1.ImageRegistryCredentials) (RegistryClient, error)
+}
 
 type Initializer = func(jsonContext enginecontext.Interface) error
 
@@ -20,8 +22,8 @@ type ContextLoader interface {
 	Load(
 		ctx context.Context,
 		jp jmespath.Interface,
-		client dclient.Interface,
-		rclient registryclient.Client,
+		client RawClient,
+		rclientFactory RegistryClientFactory,
 		contextEntries []kyvernov1.ContextEntry,
 		jsonContext enginecontext.Interface,
 	) error

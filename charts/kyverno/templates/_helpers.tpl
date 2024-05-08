@@ -13,8 +13,14 @@
 {{- with .admissionReports -}}
   {{- $flags = append $flags (print "--admissionReports=" .enabled) -}}
 {{- end -}}
+{{- with .aggregateReports -}}
+  {{- $flags = append $flags (print "--aggregateReports=" .enabled) -}}
+{{- end -}}
 {{- with .policyReports -}}
   {{- $flags = append $flags (print "--policyReports=" .enabled) -}}
+{{- end -}}
+{{- with .validatingAdmissionPolicyReports -}}
+  {{- $flags = append $flags (print "--validatingAdmissionPolicyReports=" .enabled) -}}
 {{- end -}}
 {{- with .autoUpdateWebhooks -}}
   {{- $flags = append $flags (print "--autoUpdateWebhooks=" .enabled) -}}
@@ -37,13 +43,19 @@
 {{- with .forceFailurePolicyIgnore -}}
   {{- $flags = append $flags (print "--forceFailurePolicyIgnore=" .enabled) -}}
 {{- end -}}
+{{- with .generateValidatingAdmissionPolicy -}}
+  {{- $flags = append $flags (print "--generateValidatingAdmissionPolicy=" .enabled) -}}
+{{- end -}}
+{{- with .globalContext -}}
+  {{- $flags = append $flags (print "--maxAPICallResponseLength=" (int .maxApiCallResponseLength)) -}}
+{{- end -}}
 {{- with .logging -}}
   {{- $flags = append $flags (print "--loggingFormat=" .format) -}}
   {{- $flags = append $flags (print "--v=" (join "," .verbosity)) -}}
 {{- end -}}
 {{- with .omitEvents -}}
   {{- with .eventTypes -}}
-    {{- $flags = append $flags (print "--omit-events=" (join "," .)) -}}
+    {{- $flags = append $flags (print "--omitEvents=" (join "," .)) -}}
   {{- end -}}
 {{- end -}}
 {{- with .policyExceptions -}}
@@ -61,6 +73,20 @@
 {{- with .registryClient -}}
   {{- $flags = append $flags (print "--allowInsecureRegistry=" .allowInsecure) -}}
   {{- $flags = append $flags (print "--registryCredentialHelpers=" (join "," .credentialHelpers)) -}}
+{{- end -}}
+{{- with .ttlController -}}
+  {{- $flags = append $flags (print "--ttlReconciliationInterval=" .reconciliationInterval) -}}
+{{- end -}}
+{{- with .tuf -}}
+  {{- with .enabled -}}
+    {{- $flags = append $flags (print "--enableTuf=" .) -}}
+  {{- end -}}
+  {{- with .mirror -}}
+    {{- $flags = append $flags (print "--tufMirror=" .) -}}
+  {{- end -}}
+  {{- with .root -}}
+    {{- $flags = append $flags (print "--tufRoot=" .) -}}
+  {{- end -}}
 {{- end -}}
 {{- with $flags -}}
   {{- toYaml . -}}

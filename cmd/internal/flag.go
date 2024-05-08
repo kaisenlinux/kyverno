@@ -8,11 +8,13 @@ import (
 	"github.com/kyverno/kyverno/pkg/leaderelection"
 	"github.com/kyverno/kyverno/pkg/logging"
 	"github.com/kyverno/kyverno/pkg/toggle"
+	"github.com/sigstore/sigstore/pkg/tuf"
 )
 
 var (
 	// logging
-	loggingFormat string
+	loggingFormat   string
+	loggingTsFormat string
 	// profiling
 	profilingEnabled bool
 	profilingAddress string
@@ -32,23 +34,36 @@ var (
 	kubeconfig           string
 	clientRateLimitQPS   float64
 	clientRateLimitBurst int
+	eventsRateLimitQPS   float64
+	eventsRateLimitBurst int
 	// engine
 	enablePolicyException  bool
 	exceptionNamespace     string
 	enableConfigMapCaching bool
 	// cosign
-	imageSignatureRepository string
+	enableTUF bool
+	tufMirror string
+	tufRoot   string
 	// registry client
 	imagePullSecrets          string
 	allowInsecureRegistry     bool
 	registryCredentialHelpers string
 	// leader election
 	leaderElectionRetryPeriod time.Duration
+	// cleanupServerPort is the kyverno cleanup server port
+	cleanupServerPort string
+	// image verify cache
+	imageVerifyCacheEnabled     bool
+	imageVerifyCacheTTLDuration time.Duration
+	imageVerifyCacheMaxSize     int64
+	// global context
+	enableGlobalContext bool
 )
 
 func initLoggingFlags() {
 	logging.InitFlags(nil)
 	flag.StringVar(&loggingFormat, "loggingFormat", logging.TextFormat, "This determines the output format of the logger.")
+	flag.StringVar(&loggingTsFormat, "loggingtsFormat", logging.DefaultTime, "This determines the timestamp format of the logger.")
 	checkErr(flag.Set("v", "2"), "failed to init flags")
 }
 
@@ -73,15 +88,17 @@ func initMetricsFlags() {
 	flag.BoolVar(&disableMetricsExport, "disableMetrics", false, "Set this flag to 'true' to disable metrics.")
 }
 
-func initKubeconfigFlags(qps float64, burst int) {
+func initKubeconfigFlags(qps float64, burst int, eventsQPS float64, eventsBurst int) {
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	flag.Float64Var(&clientRateLimitQPS, "clientRateLimitQPS", qps, "Configure the maximum QPS to the Kubernetes API server from Kyverno. Uses the client default if zero.")
 	flag.IntVar(&clientRateLimitBurst, "clientRateLimitBurst", burst, "Configure the maximum burst for throttle. Uses the client default if zero.")
+	flag.Float64Var(&eventsRateLimitQPS, "eventsRateLimitQPS", eventsQPS, "Configure the maximum QPS to the Kubernetes API server from Kyverno for events. Uses the client default if zero.")
+	flag.IntVar(&eventsRateLimitBurst, "eventsRateLimitBurst", eventsBurst, "Configure the maximum burst for throttle for events. Uses the client default if zero.")
 }
 
 func initPolicyExceptionsFlags() {
 	flag.StringVar(&exceptionNamespace, "exceptionNamespace", "", "Configure the namespace to accept PolicyExceptions.")
-	flag.BoolVar(&enablePolicyException, "enablePolicyException", false, "Enable PolicyException feature.")
+	flag.BoolVar(&enablePolicyException, "enablePolicyException", true, "Enable PolicyException feature.")
 }
 
 func initConfigMapCachingFlags() {
@@ -93,28 +110,44 @@ func initDeferredLoadingFlags() {
 }
 
 func initCosignFlags() {
-	flag.StringVar(&imageSignatureRepository, "imageSignatureRepository", "", "Alternate repository for image signatures. Can be overridden per rule via `verifyImages.Repository`.")
+	flag.BoolVar(&enableTUF, "enableTuf", false, "enable tuf for private sigstore deployments")
+	flag.StringVar(&tufMirror, "tufMirror", tuf.DefaultRemoteRoot, "Alternate TUF mirror for sigstore. If left blank, public sigstore one is used for cosign verification.")
+	flag.StringVar(&tufRoot, "tufRoot", "", "Alternate TUF root.json for sigstore. If left blank, public sigstore one is used for cosign verification.")
 }
 
 func initRegistryClientFlags() {
 	flag.BoolVar(&allowInsecureRegistry, "allowInsecureRegistry", false, "Whether to allow insecure connections to registries. Don't use this for anything but testing.")
 	flag.StringVar(&imagePullSecrets, "imagePullSecrets", "", "Secret resource names for image registry access credentials.")
-	flag.StringVar(&registryCredentialHelpers, "registryCredentialHelpers", "", "Credential helpers to enable (default,google,amazon,azure,github), all will be enabled if empty.")
+	flag.StringVar(&registryCredentialHelpers, "registryCredentialHelpers", "", "Credential helpers to enable (default,google,amazon,azure,github). No helpers are added when this flag is empty.")
+}
+
+func initImageVerifyCacheFlags() {
+	flag.BoolVar(&imageVerifyCacheEnabled, "imageVerifyCacheEnabled", true, "Enable a TTL cache for verified images.")
+	flag.Int64Var(&imageVerifyCacheMaxSize, "imageVerifyCacheMaxSize", 1000, "Maximum number of keys that can be stored in the TTL cache. Keys are a combination of policy elements along with the image reference. Default is 1000. 0 sets the value to default.")
+	flag.DurationVar(&imageVerifyCacheTTLDuration, "imageVerifyCacheTTLDuration", 60*time.Minute, "Maximum TTL value for a cache expressed as duration. Default is 60m. 0 sets the value to default.")
 }
 
 func initLeaderElectionFlags() {
 	flag.DurationVar(&leaderElectionRetryPeriod, "leaderElectionRetryPeriod", leaderelection.DefaultRetryPeriod, "Configure leader election retry period.")
 }
 
+func initCleanupFlags() {
+	flag.StringVar(&cleanupServerPort, "cleanupServerPort", "9443", "kyverno cleanup server port, defaults to '9443'.")
+}
+
 type options struct {
 	clientRateLimitQPS   float64
 	clientRateLimitBurst int
+	eventsRateLimitQPS   float64
+	eventsRateLimitBurst int
 }
 
 func newOptions() options {
 	return options{
 		clientRateLimitQPS:   20,
 		clientRateLimitBurst: 50,
+		eventsRateLimitQPS:   1000,
+		eventsRateLimitBurst: 2000,
 	}
 }
 
@@ -155,7 +188,7 @@ func initFlags(config Configuration, opts ...Option) {
 	}
 	// kubeconfig
 	if config.UsesKubeconfig() {
-		initKubeconfigFlags(options.clientRateLimitQPS, options.clientRateLimitBurst)
+		initKubeconfigFlags(options.clientRateLimitQPS, options.clientRateLimitBurst, options.eventsRateLimitQPS, options.eventsRateLimitBurst)
 	}
 	// policy exceptions
 	if config.UsesPolicyExceptions() {
@@ -177,15 +210,23 @@ func initFlags(config Configuration, opts ...Option) {
 	if config.UsesRegistryClient() {
 		initRegistryClientFlags()
 	}
+	// image verify cache
+	if config.UsesImageVerifyCache() {
+		initImageVerifyCacheFlags()
+	}
 	// leader election
 	if config.UsesLeaderElection() {
 		initLeaderElectionFlags()
 	}
+	initCleanupFlags()
 	for _, flagset := range config.FlagSets() {
 		flagset.VisitAll(func(f *flag.Flag) {
 			flag.CommandLine.Var(f.Value, f.Name, f.Usage)
 		})
 	}
+}
+
+func showWarnings(config Configuration, logger logr.Logger) {
 }
 
 func ParseFlags(config Configuration, opts ...Option) {
@@ -203,6 +244,14 @@ func PolicyExceptionEnabled() bool {
 
 func LeaderElectionRetryPeriod() time.Duration {
 	return leaderElectionRetryPeriod
+}
+
+func CleanupServerPort() string {
+	return cleanupServerPort
+}
+
+func GlobalContextEnabled() bool {
+	return enableGlobalContext
 }
 
 func printFlagSettings(logger logr.Logger) {
