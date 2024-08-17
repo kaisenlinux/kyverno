@@ -2,8 +2,8 @@ Source: kyverno
 Section: admin
 Priority: optional
 Maintainer: Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>
-Build-Depends: debhelper-compat (= 13), dh-golang, golang-go (>= 1.18)
-Standards-Version: 4.6.0
+Build-Depends: debhelper-compat (= 13), dh-golang, golang-go (>= 1.21.4)
+Standards-Version: 4.7.2
 Homepage: https://kyverno.io/
 Vcs-Browser: https://gitlab.com/kaisenlinux/packages/kyverno
 Vcs-Git: https://gitlab.com/kaisenlinux/packages/kyverno.git

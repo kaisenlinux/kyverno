@@ -1,8 +1,8 @@
 apiVersion: v2
 type: application
 name: kyverno
-version: 3.2.1
-appVersion: v1.12.1
+version: 3.2.6
+appVersion: v1.12.5
 icon: https://github.com/kyverno/kyverno/raw/main/img/logo.png
 description: Kubernetes Native Policy Management
 keywords:
@@ -34,19 +34,13 @@ annotations:
   # valid kinds are: added, changed, deprecated, removed, fixed and security
   artifacthub.io/changes: |
     - kind: added
-      description: Add profiling support
+      description: Add a key to preserve configmap settings during upgrade
     - kind: added
-      description: Add global nodeSelector
-    - kind: added
-      description: Add podLabels to the post-upgrade hook
-    - kind: added
-      description: Add podLabels to the pre-delete hook
-    - kind: fixed
-      description: Ensure CA certificate config maps are created when data is provided
+      description: Make admission reports breaker threshold configurable
 dependencies:
   - name: grafana
-    version: 3.2.1
+    version: 3.2.6
     condition: grafana.enabled
   - name: crds
-    version: 3.2.1
+    version: 3.2.6
     condition: crds.install

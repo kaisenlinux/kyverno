@@ -1,3 +1,13 @@
+kyverno (1.12.5-1kaisen) kaisen-packages; urgency=medium
+
+  * Import the 1.12.5 version
+  * Update all quilt patchs
+  * Bump the Standards-Version
+  * Bump the golang-go version required to build
+  * Drop the i386 arch
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Sat, 17 Aug 2024 19:17:26 +0200
+
 kyverno (1.12.1-1kaisen) kaisen-packages; urgency=medium
 
   * Import the 1.12.1 version

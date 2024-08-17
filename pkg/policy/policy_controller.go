@@ -24,6 +24,7 @@ import (
 	"github.com/kyverno/kyverno/pkg/metrics"
 	datautils "github.com/kyverno/kyverno/pkg/utils/data"
 	engineutils "github.com/kyverno/kyverno/pkg/utils/engine"
+	"github.com/kyverno/kyverno/pkg/utils/generator"
 	kubeutils "github.com/kyverno/kyverno/pkg/utils/kube"
 	policyvalidation "github.com/kyverno/kyverno/pkg/validation/policy"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -88,6 +89,8 @@ type policyController struct {
 	metricsConfig metrics.MetricsConfigManager
 
 	jp jmespath.Interface
+
+	urGenerator generator.UpdateRequestGenerator
 }
 
 // NewPolicyController create a new PolicyController
@@ -105,6 +108,7 @@ func NewPolicyController(
 	reconcilePeriod time.Duration,
 	metricsConfig metrics.MetricsConfigManager,
 	jp jmespath.Interface,
+	urGenerator generator.UpdateRequestGenerator,
 ) (*policyController, error) {
 	// Event broad caster
 	eventInterface := client.GetEventsInterface()
@@ -131,6 +135,7 @@ func NewPolicyController(
 		metricsConfig:   metricsConfig,
 		log:             log,
 		jp:              jp,
+		urGenerator:     urGenerator,
 	}
 
 	pc.pLister = pInformer.Lister()
@@ -391,11 +396,11 @@ func (pc *policyController) requeuePolicies() {
 	}
 }
 
-func (pc *policyController) handleUpdateRequest(ur *kyvernov1beta1.UpdateRequest, triggerResource *unstructured.Unstructured, rule kyvernov1.Rule, policy kyvernov1.PolicyInterface) (skip bool, err error) {
+func (pc *policyController) handleUpdateRequest(ur *kyvernov1beta1.UpdateRequest, triggerResource *unstructured.Unstructured, ruleName string, policy kyvernov1.PolicyInterface) (skip bool, err error) {
 	namespaceLabels := engineutils.GetNamespaceSelectorsFromNamespaceLister(triggerResource.GetKind(), triggerResource.GetNamespace(), pc.nsLister, pc.log)
 	policyContext, err := backgroundcommon.NewBackgroundContext(pc.log, pc.client, ur, policy, triggerResource, pc.configuration, pc.jp, namespaceLabels)
 	if err != nil {
-		return false, fmt.Errorf("failed to build policy context for rule %s: %w", rule.Name, err)
+		return false, fmt.Errorf("failed to build policy context for rule %s: %w", ruleName, err)
 	}
 
 	engineResponse := pc.engine.ApplyBackgroundChecks(context.TODO(), policyContext)
@@ -405,14 +410,21 @@ func (pc *policyController) handleUpdateRequest(ur *kyvernov1beta1.UpdateRequest
 
 	for _, ruleResponse := range engineResponse.PolicyResponse.Rules {
 		if ruleResponse.Status() != engineapi.RuleStatusPass {
-			pc.log.V(4).Info("skip creating URs on policy update", "policy", policy.GetName(), "rule", rule.Name, "rule.Status", ruleResponse.Status())
+			pc.log.V(4).Info("skip creating URs on policy update", "policy", policy.GetName(), "rule", ruleName, "rule.Status", ruleResponse.Status())
+			continue
+		}
+
+		if ruleResponse.Name() != ur.Spec.GetRuleName() {
 			continue
 		}
 
 		pc.log.V(2).Info("creating new UR for generate")
-		created, err := pc.kyvernoClient.KyvernoV1beta1().UpdateRequests(config.KyvernoNamespace()).Create(context.TODO(), ur, metav1.CreateOptions{})
+		created, err := pc.urGenerator.Generate(context.TODO(), pc.kyvernoClient, ur, pc.log)
 		if err != nil {
 			return false, err
+		}
+		if created == nil {
+			continue
 		}
 		updated := created.DeepCopy()
 		updated.Status.State = kyvernov1beta1.Pending
@@ -424,18 +436,58 @@ func (pc *policyController) handleUpdateRequest(ur *kyvernov1beta1.UpdateRequest
 	return false, err
 }
 
-func generateTriggers(client dclient.Interface, rule kyvernov1.Rule, log logr.Logger) []*unstructured.Unstructured {
-	list := &unstructured.UnstructuredList{}
+func getTriggers(client dclient.Interface, rule kyvernov1.Rule, isNamespacedPolicy bool, policyNamespace string, log logr.Logger) []*unstructured.Unstructured {
+	var resources []*unstructured.Unstructured
 
-	kinds := fetchUniqueKinds(rule)
+	appendResources := func(match kyvernov1.ResourceDescription) {
+		resources = append(resources, getResources(client, policyNamespace, isNamespacedPolicy, match, log)...)
+	}
 
-	for _, kind := range kinds {
-		mlist, err := client.ListResource(context.TODO(), "", kind, "", rule.MatchResources.Selector)
+	if !rule.MatchResources.ResourceDescription.IsEmpty() {
+		appendResources(rule.MatchResources.ResourceDescription)
+	}
+
+	for _, any := range rule.MatchResources.Any {
+		appendResources(any.ResourceDescription)
+	}
+
+	for _, all := range rule.MatchResources.All {
+		appendResources(all.ResourceDescription)
+	}
+
+	return resources
+}
+
+func getResources(client dclient.Interface, policyNs string, isNamespacedPolicy bool, match kyvernov1.ResourceDescription, log logr.Logger) []*unstructured.Unstructured {
+	var items []*unstructured.Unstructured
+
+	for _, kind := range match.Kinds {
+		group, version, kind, _ := kubeutils.ParseKindSelector(kind)
+
+		namespace := ""
+		if isNamespacedPolicy {
+			namespace = policyNs
+		}
+
+		groupVersion := ""
+		if group != "*" && version != "*" {
+			groupVersion = group + "/" + version
+		} else if version != "*" {
+			groupVersion = version
+		}
+
+		resources, err := client.ListResource(context.TODO(), groupVersion, kind, namespace, match.Selector)
 		if err != nil {
 			log.Error(err, "failed to list matched resource")
 			continue
 		}
-		list.Items = append(list.Items, mlist.Items...)
+
+		for i, res := range resources.Items {
+			if !resourceMatches(match, res, isNamespacedPolicy) {
+				continue
+			}
+			items = append(items, &resources.Items[i])
+		}
 	}
-	return convertlist(list.Items)
+	return items
 }

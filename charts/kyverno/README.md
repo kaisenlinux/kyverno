@@ -2,7 +2,7 @@
 
 Kubernetes Native Policy Management
 
-![Version: 3.2.1](https://img.shields.io/badge/Version-3.2.1-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v1.12.1](https://img.shields.io/badge/AppVersion-v1.12.1-informational?style=flat-square)
+![Version: 3.2.6](https://img.shields.io/badge/Version-3.2.6-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v1.12.5](https://img.shields.io/badge/AppVersion-v1.12.5-informational?style=flat-square)
 
 ## About
 
@@ -275,6 +275,7 @@ The chart values are organised per component.
 | crds.migration.podAntiAffinity | object | `{}` | Pod anti affinity constraints. |
 | crds.migration.podAffinity | object | `{}` | Pod affinity constraints. |
 | crds.migration.podLabels | object | `{}` | Pod labels. |
+| crds.migration.podAnnotations | object | `{}` | Pod annotations. |
 | crds.migration.nodeAffinity | object | `{}` | Node affinity constraints. |
 | crds.migration.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"privileged":false,"readOnlyRootFilesystem":true,"runAsGroup":65534,"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}}` | Security context for the hook containers |
 
@@ -283,6 +284,7 @@ The chart values are organised per component.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | config.create | bool | `true` | Create the configmap. |
+| config.preserve | bool | `true` | Preserve the configmap settings during upgrade. |
 | config.name | string | `nil` | The configmap name (required if `create` is `false`). |
 | config.annotations | object | `{}` | Additional annotations to add to the configmap. |
 | config.enableDefaultRegistryMutation | bool | `true` | Enable registry mutation for container images. Enabled by default. |
@@ -353,7 +355,8 @@ The chart values are organised per component.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| admissionController.featuresOverride | object | `{}` | Overrides features defined at the root level |
+| admissionController.featuresOverride | object | `{"admissionReports":{"backPressureThreshold":1000}}` | Overrides features defined at the root level |
+| admissionController.featuresOverride.admissionReports.backPressureThreshold | int | `1000` | Max number of admission reports allowed in flight until the admission controller stops creating new ones |
 | admissionController.rbac.create | bool | `true` | Create RBAC resources |
 | admissionController.rbac.serviceAccount.name | string | `nil` | The ServiceAccount name |
 | admissionController.rbac.serviceAccount.annotations | object | `{}` | Annotations for the ServiceAccount |
@@ -698,6 +701,7 @@ The chart values are organised per component.
 | webhooksCleanup.podAntiAffinity | object | `{}` | Pod anti affinity constraints. |
 | webhooksCleanup.podAffinity | object | `{}` | Pod affinity constraints. |
 | webhooksCleanup.podLabels | object | `{}` | Pod labels. |
+| webhooksCleanup.podAnnotations | object | `{}` | Pod annotations. |
 | webhooksCleanup.nodeAffinity | object | `{}` | Node affinity constraints. |
 | webhooksCleanup.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"privileged":false,"readOnlyRootFilesystem":true,"runAsGroup":65534,"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}}` | Security context for the hook containers |
 
@@ -765,6 +769,72 @@ The chart values are organised per component.
 | cleanupJobs.clusterAdmissionReports.podAntiAffinity | object | `{}` | Pod anti affinity constraints. |
 | cleanupJobs.clusterAdmissionReports.podAffinity | object | `{}` | Pod affinity constraints. |
 | cleanupJobs.clusterAdmissionReports.nodeAffinity | object | `{}` | Node affinity constraints. |
+| cleanupJobs.updateRequests.enabled | bool | `true` | Enable cleanup cronjob |
+| cleanupJobs.updateRequests.backoffLimit | int | `3` | Maximum number of retries before considering a Job as failed. Defaults to 3. |
+| cleanupJobs.updateRequests.ttlSecondsAfterFinished | string | `""` | Time until the pod from the cronjob is deleted |
+| cleanupJobs.updateRequests.image.registry | string | `nil` | Image registry |
+| cleanupJobs.updateRequests.image.repository | string | `"bitnami/kubectl"` | Image repository |
+| cleanupJobs.updateRequests.image.tag | string | `"1.28.5"` | Image tag Defaults to `latest` if omitted |
+| cleanupJobs.updateRequests.image.pullPolicy | string | `nil` | Image pull policy Defaults to image.pullPolicy if omitted |
+| cleanupJobs.updateRequests.imagePullSecrets | list | `[]` | Image pull secrets |
+| cleanupJobs.updateRequests.schedule | string | `"*/10 * * * *"` | Cronjob schedule |
+| cleanupJobs.updateRequests.threshold | int | `10000` | Reports threshold, if number of updateRequests are above this value the cronjob will start deleting them |
+| cleanupJobs.updateRequests.history | object | `{"failure":1,"success":1}` | Cronjob history |
+| cleanupJobs.updateRequests.podSecurityContext | object | `{}` | Security context for the pod |
+| cleanupJobs.updateRequests.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"privileged":false,"readOnlyRootFilesystem":true,"runAsNonRoot":true,"seccompProfile":{"type":"RuntimeDefault"}}` | Security context for the containers |
+| cleanupJobs.updateRequests.priorityClassName | string | `""` | Pod PriorityClassName |
+| cleanupJobs.updateRequests.resources | object | `{}` | Job resources |
+| cleanupJobs.updateRequests.tolerations | list | `[]` | List of node taints to tolerate |
+| cleanupJobs.updateRequests.nodeSelector | object | `{}` | Node labels for pod assignment |
+| cleanupJobs.updateRequests.podAnnotations | object | `{}` | Pod Annotations |
+| cleanupJobs.updateRequests.podLabels | object | `{}` | Pod labels |
+| cleanupJobs.updateRequests.podAntiAffinity | object | `{}` | Pod anti affinity constraints. |
+| cleanupJobs.updateRequests.podAffinity | object | `{}` | Pod affinity constraints. |
+| cleanupJobs.updateRequests.nodeAffinity | object | `{}` | Node affinity constraints. |
+| cleanupJobs.ephemeralReports.enabled | bool | `true` | Enable cleanup cronjob |
+| cleanupJobs.ephemeralReports.backoffLimit | int | `3` | Maximum number of retries before considering a Job as failed. Defaults to 3. |
+| cleanupJobs.ephemeralReports.ttlSecondsAfterFinished | string | `""` | Time until the pod from the cronjob is deleted |
+| cleanupJobs.ephemeralReports.image.registry | string | `nil` | Image registry |
+| cleanupJobs.ephemeralReports.image.repository | string | `"bitnami/kubectl"` | Image repository |
+| cleanupJobs.ephemeralReports.image.tag | string | `"1.28.5"` | Image tag Defaults to `latest` if omitted |
+| cleanupJobs.ephemeralReports.image.pullPolicy | string | `nil` | Image pull policy Defaults to image.pullPolicy if omitted |
+| cleanupJobs.ephemeralReports.imagePullSecrets | list | `[]` | Image pull secrets |
+| cleanupJobs.ephemeralReports.schedule | string | `"*/10 * * * *"` | Cronjob schedule |
+| cleanupJobs.ephemeralReports.threshold | int | `10000` | Reports threshold, if number of updateRequests are above this value the cronjob will start deleting them |
+| cleanupJobs.ephemeralReports.history | object | `{"failure":1,"success":1}` | Cronjob history |
+| cleanupJobs.ephemeralReports.podSecurityContext | object | `{}` | Security context for the pod |
+| cleanupJobs.ephemeralReports.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"privileged":false,"readOnlyRootFilesystem":true,"runAsNonRoot":true,"seccompProfile":{"type":"RuntimeDefault"}}` | Security context for the containers |
+| cleanupJobs.ephemeralReports.priorityClassName | string | `""` | Pod PriorityClassName |
+| cleanupJobs.ephemeralReports.resources | object | `{}` | Job resources |
+| cleanupJobs.ephemeralReports.tolerations | list | `[]` | List of node taints to tolerate |
+| cleanupJobs.ephemeralReports.nodeSelector | object | `{}` | Node labels for pod assignment |
+| cleanupJobs.ephemeralReports.podAnnotations | object | `{}` | Pod Annotations |
+| cleanupJobs.ephemeralReports.podLabels | object | `{}` | Pod labels |
+| cleanupJobs.ephemeralReports.podAntiAffinity | object | `{}` | Pod anti affinity constraints. |
+| cleanupJobs.ephemeralReports.podAffinity | object | `{}` | Pod affinity constraints. |
+| cleanupJobs.ephemeralReports.nodeAffinity | object | `{}` | Node affinity constraints. |
+| cleanupJobs.clusterEphemeralReports.enabled | bool | `true` | Enable cleanup cronjob |
+| cleanupJobs.clusterEphemeralReports.backoffLimit | int | `3` | Maximum number of retries before considering a Job as failed. Defaults to 3. |
+| cleanupJobs.clusterEphemeralReports.ttlSecondsAfterFinished | string | `""` | Time until the pod from the cronjob is deleted |
+| cleanupJobs.clusterEphemeralReports.image.registry | string | `nil` | Image registry |
+| cleanupJobs.clusterEphemeralReports.image.repository | string | `"bitnami/kubectl"` | Image repository |
+| cleanupJobs.clusterEphemeralReports.image.tag | string | `"1.28.5"` | Image tag Defaults to `latest` if omitted |
+| cleanupJobs.clusterEphemeralReports.image.pullPolicy | string | `nil` | Image pull policy Defaults to image.pullPolicy if omitted |
+| cleanupJobs.clusterEphemeralReports.imagePullSecrets | list | `[]` | Image pull secrets |
+| cleanupJobs.clusterEphemeralReports.schedule | string | `"*/10 * * * *"` | Cronjob schedule |
+| cleanupJobs.clusterEphemeralReports.threshold | int | `10000` | Reports threshold, if number of reports are above this value the cronjob will start deleting them |
+| cleanupJobs.clusterEphemeralReports.history | object | `{"failure":1,"success":1}` | Cronjob history |
+| cleanupJobs.clusterEphemeralReports.podSecurityContext | object | `{}` | Security context for the pod |
+| cleanupJobs.clusterEphemeralReports.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"privileged":false,"readOnlyRootFilesystem":true,"runAsNonRoot":true,"seccompProfile":{"type":"RuntimeDefault"}}` | Security context for the containers |
+| cleanupJobs.clusterEphemeralReports.priorityClassName | string | `""` | Pod PriorityClassName |
+| cleanupJobs.clusterEphemeralReports.resources | object | `{}` | Job resources |
+| cleanupJobs.clusterEphemeralReports.tolerations | list | `[]` | List of node taints to tolerate |
+| cleanupJobs.clusterEphemeralReports.nodeSelector | object | `{}` | Node labels for pod assignment |
+| cleanupJobs.clusterEphemeralReports.podAnnotations | object | `{}` | Pod Annotations |
+| cleanupJobs.clusterEphemeralReports.podLabels | object | `{}` | Pod Labels |
+| cleanupJobs.clusterEphemeralReports.podAntiAffinity | object | `{}` | Pod anti affinity constraints. |
+| cleanupJobs.clusterEphemeralReports.podAffinity | object | `{}` | Pod affinity constraints. |
+| cleanupJobs.clusterEphemeralReports.nodeAffinity | object | `{}` | Node affinity constraints. |
 
 ### Other
 
@@ -794,6 +864,7 @@ The chart values are organised per component.
 | policyReportsCleanup.podAntiAffinity | object | `{}` | Pod anti affinity constraints. |
 | policyReportsCleanup.podAffinity | object | `{}` | Pod affinity constraints. |
 | policyReportsCleanup.podLabels | object | `{}` | Pod labels. |
+| policyReportsCleanup.podAnnotations | object | `{}` | Pod annotations. |
 | policyReportsCleanup.nodeAffinity | object | `{}` | Node affinity constraints. |
 | policyReportsCleanup.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"privileged":false,"readOnlyRootFilesystem":true,"runAsGroup":65534,"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}}` | Security context for the hook containers |
 
@@ -856,8 +927,8 @@ Kubernetes: `>=1.25.0-0`
 
 | Repository | Name | Version |
 |------------|------|---------|
-|  | crds | 3.2.1 |
-|  | grafana | 3.2.1 |
+|  | crds | 3.2.6 |
+|  | grafana | 3.2.6 |
 
 ## Maintainers
 

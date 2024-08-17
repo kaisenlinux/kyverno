@@ -58,7 +58,6 @@ func buildPolicyEventMessage(resp engineapi.RuleResponse, resource engineapi.Res
 	if resp.Message() != "" {
 		fmt.Fprintf(&b, "; %s", resp.Message())
 	}
-
 	return b.String()
 }
 
@@ -187,7 +186,7 @@ func NewBackgroundFailedEvent(err error, policy kyvernov1.PolicyInterface, rule 
 }
 
 func NewBackgroundSuccessEvent(source Source, policy kyvernov1.PolicyInterface, resources []kyvernov1.ResourceSpec) []Info {
-	var events []Info
+	events := make([]Info, 0, len(resources))
 	msg := "resource generated"
 	action := ResourceGenerated
 	if source == MutateExistingController {

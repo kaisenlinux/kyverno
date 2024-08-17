@@ -737,7 +737,7 @@ func (c *controller) buildResourceMutatingWebhookConfiguration(ctx context.Conte
 }
 
 func (c *controller) buildResourceMutatingWebhookRules(caBundle []byte, webhookCfg config.WebhookConfig, sideEffects *admissionregistrationv1.SideEffectClass, webhooks []*webhook, mapResourceToOpnType map[string][]admissionregistrationv1.OperationType) []admissionregistrationv1.MutatingWebhook {
-	var mutatingWebhooks []admissionregistrationv1.MutatingWebhook
+	mutatingWebhooks := make([]admissionregistrationv1.MutatingWebhook, 0, len(webhooks))
 	for _, webhook := range webhooks {
 		if webhook.isEmpty() {
 			continue
@@ -820,12 +820,14 @@ func (c *controller) buildDefaultResourceValidatingWebhookConfiguration(_ contex
 func addOpnForMutatingWebhookConf(rules []kyvernov1.Rule, mapResourceToOpnType map[string][]admissionregistrationv1.OperationType) map[string][]admissionregistrationv1.OperationType {
 	var mapResourceToOpn map[string]map[string]bool
 	for _, r := range rules {
-		var resources []string
-		operationStatusMap := getOperationStatusMap()
-		operationStatusMap = computeOperationsForMutatingWebhookConf(r, operationStatusMap)
-		resources = computeResourcesOfRule(r)
-		for _, r := range resources {
-			mapResourceToOpn, mapResourceToOpnType = appendResource(r, mapResourceToOpn, operationStatusMap, mapResourceToOpnType)
+		if r.HasMutate() || r.HasVerifyImages() {
+			var resources []string
+			operationStatusMap := getOperationStatusMap()
+			operationStatusMap = computeOperationsForMutatingWebhookConf(r, operationStatusMap)
+			resources = computeResourcesOfRule(r)
+			for _, r := range resources {
+				mapResourceToOpn, mapResourceToOpnType = appendResource(r, mapResourceToOpn, operationStatusMap, mapResourceToOpnType)
+			}
 		}
 	}
 	return mapResourceToOpnType
@@ -911,7 +913,7 @@ func (c *controller) buildResourceValidatingWebhookConfiguration(ctx context.Con
 }
 
 func (c *controller) buildResourceValidatingWebhookRules(caBundle []byte, webhookCfg config.WebhookConfig, sideEffects *admissionregistrationv1.SideEffectClass, webhooks []*webhook, mapResourceToOpnType map[string][]admissionregistrationv1.OperationType) []admissionregistrationv1.ValidatingWebhook {
-	var validatingWebhooks []admissionregistrationv1.ValidatingWebhook
+	validatingWebhooks := make([]admissionregistrationv1.ValidatingWebhook, 0, len(webhooks))
 	for _, webhook := range webhooks {
 		if webhook.isEmpty() {
 			continue
