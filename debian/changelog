@@ -1,3 +1,11 @@
+kyverno (1.13.2-1kaisen) kaisen-packages; urgency=medium
+
+  * Import the 1.13.2 version
+  * Update the static-version-number quilt patch
+  * Bump the golang-go version required to build
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Tue, 14 Jan 2025 20:54:02 +0200
+
 kyverno (1.12.5-1kaisen) kaisen-packages; urgency=medium
 
   * Import the 1.12.5 version

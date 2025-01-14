@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	policyreportv1alpha2 "github.com/kyverno/kyverno/api/policyreport/v1alpha2"
-	report "github.com/kyverno/kyverno/api/policyreport/v1alpha2"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/policy"
 	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	"gotest.tools/assert"
@@ -27,11 +26,13 @@ func TestComputeClusterPolicyReports(t *testing.T) {
 			"pods-require-account",
 			engineapi.Validation,
 			"validation error: User pods must include an account for charging. Rule pods-require-account failed at path /metadata/labels/",
+			nil,
 		),
 		*engineapi.RulePass(
 			"pods-require-limits",
 			engineapi.Validation,
 			"validation rule 'pods-require-limits' passed.",
+			nil,
 		),
 	)
 	clustered, namespaced := ComputePolicyReports(false, er)
@@ -61,11 +62,13 @@ func TestComputePolicyReports(t *testing.T) {
 			"pods-require-account",
 			engineapi.Validation,
 			"validation error: User pods must include an account for charging. Rule pods-require-account failed at path /metadata/labels/",
+			nil,
 		),
 		*engineapi.RulePass(
 			"pods-require-limits",
 			engineapi.Validation,
 			"validation rule 'pods-require-limits' passed.",
+			nil,
 		),
 	)
 	clustered, namespaced := ComputePolicyReports(false, er)
@@ -95,11 +98,13 @@ func TestComputePolicyReportResultsPerPolicyOld(t *testing.T) {
 			"pods-require-account",
 			engineapi.Validation,
 			"validation error: User pods must include an account for charging. Rule pods-require-account failed at path /metadata/labels/",
+			nil,
 		),
 		*engineapi.RulePass(
 			"pods-require-limits",
 			engineapi.Validation,
 			"validation rule 'pods-require-limits' passed.",
+			nil,
 		),
 	)
 	results := ComputePolicyReportResultsPerPolicy(false, er)
@@ -120,7 +125,7 @@ func TestMergeClusterReport(t *testing.T) {
 	clustered := []policyreportv1alpha2.ClusterPolicyReport{{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "ClusterPolicyReport",
-			APIVersion: report.SchemeGroupVersion.String(),
+			APIVersion: policyreportv1alpha2.SchemeGroupVersion.String(),
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "cpolr-4",
@@ -128,13 +133,13 @@ func TestMergeClusterReport(t *testing.T) {
 		Results: []policyreportv1alpha2.PolicyReportResult{
 			{
 				Policy: "cpolr-4",
-				Result: report.StatusFail,
+				Result: policyreportv1alpha2.StatusFail,
 			},
 		},
 	}, {
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "ClusterPolicyReport",
-			APIVersion: report.SchemeGroupVersion.String(),
+			APIVersion: policyreportv1alpha2.SchemeGroupVersion.String(),
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "cpolr-5",
@@ -142,19 +147,19 @@ func TestMergeClusterReport(t *testing.T) {
 		Results: []policyreportv1alpha2.PolicyReportResult{
 			{
 				Policy: "cpolr-5",
-				Result: report.StatusFail,
+				Result: policyreportv1alpha2.StatusFail,
 			},
 		},
 	}}
 	expectedResults := []policyreportv1alpha2.PolicyReportResult{{
 		Policy: "cpolr-4",
-		Result: report.StatusFail,
+		Result: policyreportv1alpha2.StatusFail,
 	}, {
 		Policy: "cpolr-5",
-		Result: report.StatusFail,
+		Result: policyreportv1alpha2.StatusFail,
 	}}
 	cpolr := MergeClusterReports(clustered)
-	assert.Equal(t, cpolr.APIVersion, report.SchemeGroupVersion.String())
+	assert.Equal(t, cpolr.APIVersion, policyreportv1alpha2.SchemeGroupVersion.String())
 	assert.Equal(t, cpolr.Kind, "ClusterPolicyReport")
 	assert.DeepEqual(t, cpolr.Results, expectedResults)
 	assert.Equal(t, cpolr.Summary.Pass, 0)
@@ -176,7 +181,7 @@ func TestComputePolicyReportResult(t *testing.T) {
 		name:           "skip",
 		auditWarn:      false,
 		engineResponse: engineapi.NewEngineResponse(unstructured.Unstructured{}, engineapi.NewKyvernoPolicy(policy), nil),
-		ruleResponse:   *engineapi.RuleSkip("xxx", engineapi.Mutation, "test"),
+		ruleResponse:   *engineapi.RuleSkip("xxx", engineapi.Mutation, "test", nil),
 		want: policyreportv1alpha2.PolicyReportResult{
 			Source:    "kyverno",
 			Policy:    "pod-requirements",
@@ -192,7 +197,7 @@ func TestComputePolicyReportResult(t *testing.T) {
 		name:           "pass",
 		auditWarn:      false,
 		engineResponse: engineapi.NewEngineResponse(unstructured.Unstructured{}, engineapi.NewKyvernoPolicy(policy), nil),
-		ruleResponse:   *engineapi.RulePass("xxx", engineapi.Mutation, "test"),
+		ruleResponse:   *engineapi.RulePass("xxx", engineapi.Mutation, "test", nil),
 		want: policyreportv1alpha2.PolicyReportResult{
 			Source:    "kyverno",
 			Policy:    "pod-requirements",
@@ -208,7 +213,7 @@ func TestComputePolicyReportResult(t *testing.T) {
 		name:           "fail",
 		auditWarn:      false,
 		engineResponse: engineapi.NewEngineResponse(unstructured.Unstructured{}, engineapi.NewKyvernoPolicy(policy), nil),
-		ruleResponse:   *engineapi.RuleFail("xxx", engineapi.Mutation, "test"),
+		ruleResponse:   *engineapi.RuleFail("xxx", engineapi.Mutation, "test", nil),
 		want: policyreportv1alpha2.PolicyReportResult{
 			Source:    "kyverno",
 			Policy:    "pod-requirements",
@@ -224,7 +229,7 @@ func TestComputePolicyReportResult(t *testing.T) {
 		name:           "fail - audit warn",
 		auditWarn:      true,
 		engineResponse: engineapi.NewEngineResponse(unstructured.Unstructured{}, engineapi.NewKyvernoPolicy(policy), nil),
-		ruleResponse:   *engineapi.RuleFail("xxx", engineapi.Mutation, "test"),
+		ruleResponse:   *engineapi.RuleFail("xxx", engineapi.Mutation, "test", nil),
 		want: policyreportv1alpha2.PolicyReportResult{
 			Source:    "kyverno",
 			Policy:    "pod-requirements",
@@ -240,7 +245,7 @@ func TestComputePolicyReportResult(t *testing.T) {
 		name:           "error",
 		auditWarn:      false,
 		engineResponse: engineapi.NewEngineResponse(unstructured.Unstructured{}, engineapi.NewKyvernoPolicy(policy), nil),
-		ruleResponse:   *engineapi.RuleError("xxx", engineapi.Mutation, "test", nil),
+		ruleResponse:   *engineapi.RuleError("xxx", engineapi.Mutation, "test", nil, nil),
 		want: policyreportv1alpha2.PolicyReportResult{
 			Source:    "kyverno",
 			Policy:    "pod-requirements",
@@ -256,12 +261,12 @@ func TestComputePolicyReportResult(t *testing.T) {
 		name:           "warn",
 		auditWarn:      false,
 		engineResponse: engineapi.NewEngineResponse(unstructured.Unstructured{}, engineapi.NewKyvernoPolicy(policy), nil),
-		ruleResponse:   *engineapi.RuleWarn("xxx", engineapi.Mutation, "test"),
+		ruleResponse:   *engineapi.RuleWarn("xxx", engineapi.Mutation, "test", nil),
 		want: policyreportv1alpha2.PolicyReportResult{
 			Source:    "kyverno",
 			Policy:    "pod-requirements",
 			Rule:      "xxx",
-			Result:    policyreportv1alpha2.StatusError,
+			Result:    policyreportv1alpha2.StatusWarn,
 			Resources: []corev1.ObjectReference{{}},
 			Message:   "test",
 			Scored:    true,
@@ -295,7 +300,7 @@ func TestPSSComputePolicyReportResult(t *testing.T) {
 		name:           "fail",
 		auditWarn:      false,
 		engineResponse: engineapi.NewEngineResponse(unstructured.Unstructured{}, engineapi.NewKyvernoPolicy(policy), nil),
-		ruleResponse:   *engineapi.RuleFail("xxx", engineapi.Mutation, "test"),
+		ruleResponse:   *engineapi.RuleFail("xxx", engineapi.Mutation, "test", nil),
 		want: policyreportv1alpha2.PolicyReportResult{
 			Source:     "kyverno",
 			Policy:     "psa",
@@ -342,4 +347,32 @@ func TestComputePolicyReportResultsPerPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNamespacedPolicyReportGeneration(t *testing.T) {
+	results, err := policy.Load(nil, "", "../_testdata/policies/namespace-policy.yaml")
+	assert.NilError(t, err)
+	assert.Equal(t, len(results.Policies), 1)
+	policy := results.Policies[0]
+
+	er := engineapi.EngineResponse{}
+	er = er.WithPolicy(engineapi.NewKyvernoPolicy(policy))
+	er.PolicyResponse.Add(
+		engineapi.ExecutionStats{},
+		*engineapi.RuleFail(
+			"validate-pod",
+			engineapi.Validation,
+			"validation error: Pods must have a label `app`.",
+			nil,
+		),
+	)
+
+	clustered, namespaced := ComputePolicyReports(false, er)
+
+	assert.Equal(t, len(clustered), 0)
+	assert.Equal(t, len(namespaced), 1)
+
+	report := namespaced[0]
+	assert.Equal(t, report.GetNamespace(), policy.GetNamespace())
+	assert.Equal(t, report.Kind, "PolicyReport")
 }
