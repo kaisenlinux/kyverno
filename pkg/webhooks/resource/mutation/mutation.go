@@ -2,6 +2,7 @@ package mutation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -45,7 +46,6 @@ func NewMutationHandler(
 	metrics metrics.MetricsConfigManager,
 	admissionReports bool,
 	reportsConfig reportutils.ReportingConfiguration,
-	reportsBreaker breaker.Breaker,
 ) MutationHandler {
 	return &mutationHandler{
 		log:              log,
@@ -56,7 +56,6 @@ func NewMutationHandler(
 		metrics:          metrics,
 		admissionReports: admissionReports,
 		reportsConfig:    reportsConfig,
-		reportsBreaker:   reportsBreaker,
 	}
 }
 
@@ -69,7 +68,6 @@ type mutationHandler struct {
 	metrics          metrics.MetricsConfigManager
 	admissionReports bool
 	reportsConfig    reportutils.ReportingConfiguration
-	reportsBreaker   breaker.Breaker
 }
 
 func (h *mutationHandler) HandleMutation(
@@ -124,7 +122,7 @@ func (v *mutationHandler) applyMutations(
 					failurePolicy = kyvernov1.Fail
 				}
 
-				engineResponse, policyPatches, err := v.applyMutation(ctx, request.AdmissionRequest, currentContext, failurePolicy)
+				engineResponse, policyPatches, err := v.applyMutation(ctx, request.AdmissionRequest, currentContext, failurePolicy, policy)
 				if err != nil {
 					return fmt.Errorf("mutation policy %s error: %v", policy.GetName(), err)
 				}
@@ -133,7 +131,7 @@ func (v *mutationHandler) applyMutations(
 					patches = append(patches, policyPatches...)
 					rules := engineResponse.GetSuccessRules()
 					if len(rules) != 0 {
-						v.log.Info("mutation rules from policy applied successfully", "policy", policy.GetName(), "rules", rules)
+						v.log.V(2).Info("mutation rules from policy applied successfully", "policy", policy.GetName(), "rules", rules)
 					}
 				}
 
@@ -172,9 +170,14 @@ func (v *mutationHandler) applyMutations(
 	return jsonutils.JoinPatches(patch.ConvertPatches(patches...)...), engineResponses, nil
 }
 
-func (h *mutationHandler) applyMutation(ctx context.Context, request admissionv1.AdmissionRequest, policyContext *engine.PolicyContext, failurePolicy kyvernov1.FailurePolicyType) (*engineapi.EngineResponse, []jsonpatch.JsonPatchOperation, error) {
+func (h *mutationHandler) applyMutation(ctx context.Context, request admissionv1.AdmissionRequest, policyContext *engine.PolicyContext, failurePolicy kyvernov1.FailurePolicyType, policy kyvernov1.PolicyInterface) (*engineapi.EngineResponse, []jsonpatch.JsonPatchOperation, error) {
 	if request.Kind.Kind != "Namespace" && request.Namespace != "" {
-		policyContext = policyContext.WithNamespaceLabels(engineutils.GetNamespaceSelectorsFromNamespaceLister(request.Kind.Kind, request.Namespace, h.nsLister, h.log))
+		namespaceLabels, err := engineutils.GetNamespaceSelectorsFromNamespaceLister(request.Kind.Kind, request.Namespace, h.nsLister, []kyvernov1.PolicyInterface{policy}, h.log)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		policyContext = policyContext.WithNamespaceLabels(namespaceLabels)
 	}
 
 	engineResponse := h.engine.Mutate(ctx, policyContext)
@@ -182,10 +185,10 @@ func (h *mutationHandler) applyMutation(ctx context.Context, request admissionv1
 
 	if !engineResponse.IsSuccessful() {
 		if webhookutils.BlockRequest([]engineapi.EngineResponse{engineResponse}, failurePolicy, h.log) {
-			h.log.Info("failed to apply policy, blocking request", "policy", policyContext.Policy().GetName(), "rules", engineResponse.GetFailedRulesWithErrors())
+			h.log.V(2).Info("failed to apply policy, blocking request", "policy", policyContext.Policy().GetName(), "rules", engineResponse.GetFailedRulesWithErrors())
 			return nil, nil, fmt.Errorf("failed to apply policy %s rules %v", policyContext.Policy().GetName(), engineResponse.GetFailedRulesWithErrors())
 		} else {
-			h.log.Info("ignoring unsuccessful engine responses", "policy", policyContext.Policy().GetName(), "rules", engineResponse.GetFailedRulesWithErrors())
+			h.log.V(4).Info("ignoring unsuccessful engine responses", "policy", policyContext.Policy().GetName(), "rules", engineResponse.GetFailedRulesWithErrors())
 			return &engineResponse, nil, nil
 		}
 	}
@@ -201,8 +204,8 @@ func (h *mutationHandler) createReports(
 ) error {
 	report := reportutils.BuildMutationReport(resource, request.AdmissionRequest, engineResponses...)
 	if len(report.GetResults()) > 0 {
-		err := h.reportsBreaker.Do(ctx, func(ctx context.Context) error {
-			_, err := reportutils.CreateReport(ctx, report, h.kyvernoClient)
+		err := breaker.GetReportsBreaker().Do(ctx, func(ctx context.Context) error {
+			_, err := reportutils.CreateEphemeralReport(ctx, report, h.kyvernoClient)
 			return err
 		})
 		if err != nil {
@@ -216,9 +219,8 @@ func logMutationResponse(patches []jsonpatch.JsonPatchOperation, engineResponses
 	if len(patches) != 0 {
 		logger.V(4).Info("created patches", "count", len(patches))
 	}
-
 	// if any of the policies fails, print out the error
 	if !engineutils.IsResponseSuccessful(engineResponses) {
-		logger.Error(fmt.Errorf(webhookutils.GetErrorMsg(engineResponses)), "failed to apply mutation rules on the resource, reporting policy violation") //nolint:govet,staticcheck
+		logger.Error(errors.New(webhookutils.GetErrorMsg(engineResponses)), "failed to apply mutation rules on the resource, reporting policy violation")
 	}
 }

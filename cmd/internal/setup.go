@@ -19,13 +19,15 @@ import (
 	reportutils "github.com/kyverno/kyverno/pkg/utils/report"
 	eventsv1 "k8s.io/client-go/kubernetes/typed/events/v1"
 	corev1listers "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/rest"
+	openreportsclient "openreports.io/pkg/client/clientset/versioned/typed/openreports.io/v1alpha1"
 )
 
 func shutdown(logger logr.Logger, sdowns ...context.CancelFunc) context.CancelFunc {
 	return func() {
 		for i := range sdowns {
 			if sdowns[i] != nil {
-				logger.Info("shutting down...")
+				logger.V(2).Info("shutting down...")
 				defer sdowns[i]()
 			}
 		}
@@ -39,6 +41,7 @@ type SetupResult struct {
 	MetricsManager         metrics.MetricsConfigManager
 	Jp                     jmespath.Interface
 	KubeClient             kubeclient.UpstreamInterface
+	OpenreportsClient      openreportsclient.OpenreportsV1alpha1Interface
 	LeaderElectionClient   kubeclient.UpstreamInterface
 	RegistryClient         registryclient.Client
 	ImageVerifyCacheClient imageverifycache.Client
@@ -51,6 +54,7 @@ type SetupResult struct {
 	EventsClient           eventsv1.EventsV1Interface
 	ReportingConfiguration reportutils.ReportingConfiguration
 	ResyncPeriod           time.Duration
+	RestConfig             *rest.Config
 }
 
 func Setup(config Configuration, name string, skipResourceFilters bool) (context.Context, SetupResult, context.CancelFunc) {
@@ -96,22 +100,38 @@ func Setup(config Configuration, name string, skipResourceFilters bool) (context
 	if config.UsesApiServerClient() {
 		apiServerClient = createApiServerClient(logger, apiserverclient.WithMetrics(metricsManager, metrics.ApiServerClient), apiserverclient.WithTracing())
 	}
+	var metadataClient metadataclient.UpstreamInterface
+	if config.UsesMetadataClient() {
+		metadataClient = createMetadataClient(logger, metadataclient.WithMetrics(metricsManager, metrics.MetadataClient), metadataclient.WithTracing())
+	}
 	var dClient dclient.Interface
 	if config.UsesKyvernoDynamicClient() {
-		dClient = createKyvernoDynamicClient(logger, ctx, dynamicClient, client, resyncPeriod)
+		dClient = createKyvernoDynamicClient(logger, ctx, dynamicClient, client, resyncPeriod, crdWatcher, metadataClient)
 	}
 	var eventsClient eventsv1.EventsV1Interface
 	if config.UsesEventsClient() {
 		eventsClient = createEventsClient(logger, metricsManager)
 	}
-	var metadataClient metadataclient.UpstreamInterface
-	if config.UsesMetadataClient() {
-		metadataClient = createMetadataClient(logger, metadataclient.WithMetrics(metricsManager, metrics.MetadataClient), metadataclient.WithTracing())
-	}
 	var reportingConfig reportutils.ReportingConfiguration
 	if config.UsesReporting() {
 		reportingConfig = setupReporting(logger)
 	}
+	var restConfig *rest.Config
+	if config.UsesRestConfig() {
+		restConfig = createClientConfig(logger, clientRateLimitQPS, clientRateLimitBurst)
+	}
+
+	var orClient openreportsclient.OpenreportsV1alpha1Interface
+	if config.UsesOpenreports() {
+		openreportsEnabled, err := config.GetFlagValue("openreportsEnabled")
+		if err != nil {
+			logger.Error(err, "error parsing openreports flag")
+		}
+		if openreportsEnabled == "true" {
+			orClient = createOpenReportsClient(logger, clientRateLimitQPS, clientRateLimitBurst)
+		}
+	}
+
 	return ctx,
 		SetupResult{
 			Logger:                 logger,
@@ -124,6 +144,7 @@ func Setup(config Configuration, name string, skipResourceFilters bool) (context
 			RegistryClient:         registryClient,
 			ImageVerifyCacheClient: imageVerifyCache,
 			RegistrySecretLister:   registrySecretLister,
+			OpenreportsClient:      orClient,
 			KyvernoClient:          kyvernoClient,
 			DynamicClient:          dynamicClient,
 			ApiServerClient:        apiServerClient,
@@ -132,6 +153,7 @@ func Setup(config Configuration, name string, skipResourceFilters bool) (context
 			EventsClient:           eventsClient,
 			ReportingConfiguration: reportingConfig,
 			ResyncPeriod:           resyncPeriod,
+			RestConfig:             restConfig,
 		},
 		shutdown(logger.WithName("shutdown"), sdownMaxProcs, sdownMetrics, sdownTracing, sdownSignals)
 }

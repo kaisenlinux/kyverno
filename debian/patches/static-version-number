@@ -7,7 +7,7 @@ Author: Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>
  CGO_ENABLED    ?= 0
  ifdef VERSION
 -LD_FLAGS       := "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=$(VERSION)"
-+LD_FLAGS       := "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=1.13.2"
++LD_FLAGS       := "-s -w -X $(PACKAGE)/pkg/version.BuildVersion=1.15.0"
  else
  LD_FLAGS       := "-s -w"
  endif
